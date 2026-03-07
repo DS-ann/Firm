@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <HTTPClient.h>
 #include <Preferences.h>
 #include <BluetoothSerial.h>
 #include <ArduinoWebsockets.h>
@@ -12,22 +11,17 @@ const char* ssidList[] = {"Lenovo","SSID_2","SSID_3","SSID_4"};
 const char* passwordList[] = {"debarghya","PASS_2","PASS_3","PASS_4"};
 const int numNetworks = 4;
 
-// ===== Server =====
-const char* WS_SERVER = "wss://ranjanas-esp.onrender.com/";
-WebsocketsClient ws;
+const char* WS_SERVER = "ws://ranjanas-esp.onrender.com/"; // Use ws (not wss) if no SSL
 
-// ===== Device ID =====
+WebsocketsClient ws;
 String deviceID = String((uint32_t)ESP.getEfuseMac(), HEX);
 
 // ===== Relays =====
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
-
 bool relayState[NUM_RELAYS];
-
 unsigned long relayTimers[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
-
 unsigned long relayUsage[NUM_RELAYS];
 unsigned long relayStartTime[NUM_RELAYS];
 
@@ -36,127 +30,106 @@ Preferences preferences;
 
 // ===== Bluetooth =====
 BluetoothSerial SerialBT;
-
 TaskHandle_t VoiceTaskHandle;
 
+// ===== WiFi reconnect =====
+unsigned long lastWiFiAttempt = 0;
+const unsigned long WIFI_RETRY_INTERVAL = 10000; // 10s
+
+// ===== Voice Task (placeholder) =====
 void VoiceTask(void * pvParameters){
   for(;;){
     vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
+// ===== WiFi connect function =====
 void connectWiFi(){
+  if(WiFi.status() == WL_CONNECTED || WiFi.status() == WL_CONNECTING){
+    Serial.println("WiFi already connecting/connected");
+    return;
+  }
+
   for(int i=0;i<numNetworks;i++){
-    WiFi.begin(ssidList[i],passwordList[i]);
+    Serial.printf("Trying WiFi: %s\n", ssidList[i]);
+    WiFi.begin(ssidList[i], passwordList[i]);
 
     unsigned long startAttempt = millis();
-
-    while(WiFi.status()!=WL_CONNECTED && millis()-startAttempt<10000){
+    while(WiFi.status() != WL_CONNECTED && millis()-startAttempt < 10000){
       delay(500);
     }
 
-    if(WiFi.status()==WL_CONNECTED){
+    if(WiFi.status() == WL_CONNECTED){
+      Serial.printf("Connected to WiFi: %s\n", ssidList[i]);
       return;
     }
   }
+  Serial.println("Failed to connect to any WiFi");
 }
 
+// ===== Save/load relay state =====
 void saveState(){
-
-  preferences.begin("relayState",false);
-
+  preferences.begin("relayState", false);
   char key[6];
-
   for(int i=0;i<NUM_RELAYS;i++){
-
-    sprintf(key,"r%d",i);
-    preferences.putBool(key,relayState[i]);
-
-    sprintf(key,"t%d",i);
-    preferences.putULong(key,relayEndTime[i]);
-
-    sprintf(key,"u%d",i);
-    preferences.putULong(key,relayUsage[i]);
+    sprintf(key,"r%d",i); preferences.putBool(key, relayState[i]);
+    sprintf(key,"t%d",i); preferences.putULong(key, relayEndTime[i]);
+    sprintf(key,"u%d",i); preferences.putULong(key, relayUsage[i]);
   }
-
   preferences.end();
 }
 
 void loadState(){
-
-  preferences.begin("relayState",true);
-
+  preferences.begin("relayState", true);
   char key[6];
-
   for(int i=0;i<NUM_RELAYS;i++){
+    sprintf(key,"r%d",i); relayState[i] = preferences.getBool(key,false);
+    sprintf(key,"t%d",i); relayEndTime[i] = preferences.getULong(key,0);
+    sprintf(key,"u%d",i); relayUsage[i] = preferences.getULong(key,0);
 
-    sprintf(key,"r%d",i);
-    relayState[i] = preferences.getBool(key,false);
+    pinMode(relayPins[i], OUTPUT);
+    digitalWrite(relayPins[i], relayState[i] ? LOW : HIGH); // Active LOW
 
-    sprintf(key,"t%d",i);
-    relayEndTime[i] = preferences.getULong(key,0);
-
-    sprintf(key,"u%d",i);
-    relayUsage[i] = preferences.getULong(key,0);
-
-    pinMode(relayPins[i],OUTPUT);
-    digitalWrite(relayPins[i],relayState[i]?HIGH:LOW);
-
-    if(relayEndTime[i] > millis()){
+    if(relayEndTime[i] > millis())
       relayTimers[i] = relayEndTime[i] - millis();
-    }else{
+    else
       relayTimers[i] = 0;
-    }
   }
-
   preferences.end();
 }
 
+// ===== Relay control =====
 void updateRelay(int id,bool state){
-
   if(id<0 || id>=NUM_RELAYS) return;
 
-  if(state && !relayState[id])
-    relayStartTime[id] = millis();
+  Serial.printf("Updating relay %d -> %s\n", id, state?"ON":"OFF");
 
-  if(!state && relayState[id])
-    relayUsage[id] += millis() - relayStartTime[id];
+  if(state && !relayState[id]) relayStartTime[id] = millis();
+  if(!state && relayState[id]) relayUsage[id] += millis() - relayStartTime[id];
 
   relayState[id] = state;
-
-  digitalWrite(relayPins[id],state?HIGH:LOW);
+  digitalWrite(relayPins[id], state ? LOW : HIGH); // Active LOW
 
   saveState();
 
   DynamicJsonDocument doc(256);
-
   doc["type"]="relay";
   doc["id"]=id;
   doc["state"]=state;
-
-  String out;
-  serializeJson(doc,out);
+  String out; serializeJson(doc,out);
   ws.send(out);
 }
 
+// ===== Timer check =====
 void checkTimers(){
-
   static unsigned long lastCheck=0;
-
   unsigned long now=millis();
-
   if(now-lastCheck>=1000){
-
     lastCheck = now;
-
     for(int i=0;i<NUM_RELAYS;i++){
-
       if(relayEndTime[i]>now){
-
         relayTimers[i] = relayEndTime[i] - now;
-
-      }else if(relayTimers[i]>0){
-
+      } else if(relayTimers[i]>0){
         relayTimers[i]=0;
         updateRelay(i,false);
       }
@@ -164,12 +137,11 @@ void checkTimers(){
   }
 }
 
+// ===== Send status =====
 void sendStatus(){
-
   if(!ws.available()) return;
 
   DynamicJsonDocument doc(1024);
-
   doc["type"]="status";
 
   JsonArray rel = doc.createNestedArray("relays");
@@ -179,7 +151,6 @@ void sendStatus(){
   for(int i=0;i<NUM_RELAYS;i++) timers.add(relayTimers[i]/1000);
 
   JsonArray usageArr = doc.createNestedArray("usageStats");
-
   for(int i=0;i<NUM_RELAYS;i++){
     JsonObject u = usageArr.createNestedObject();
     u["last"]="--";
@@ -190,65 +161,53 @@ void sendStatus(){
   doc["wifiNum"]=1;
   doc["rssi"]=WiFi.RSSI();
 
-  String out;
-  serializeJson(doc,out);
-
+  String out; serializeJson(doc,out);
   ws.send(out);
+  Serial.println("Status sent to server");
 }
 
+// ===== WebSocket message =====
 void onMessage(WebsocketsMessage msg){
-
   DynamicJsonDocument doc(512);
   deserializeJson(doc,msg.data());
-
   const char* type = doc["type"];
 
   if(strcmp(type,"toggle")==0){
-
     int id = doc["relay"];
     bool state = doc["state"];
-
+    Serial.printf("WS toggle received: relay %d -> %s\n", id, state?"ON":"OFF");
     updateRelay(id,state);
-  }
-
-  else if(strcmp(type,"setTimer")==0){
-
+  } else if(strcmp(type,"setTimer")==0){
     int id = doc["id"];
     unsigned long sec = doc["sec"];
-
     relayTimers[id] = sec*1000;
     relayEndTime[id] = millis() + relayTimers[id];
-
     if(sec>0) updateRelay(id,true);
-
     saveState();
   }
 }
 
+// ===== Ensure WebSocket =====
 void ensureWS(){
-
   static unsigned long lastReconnect=0;
-
   if(WiFi.status()!=WL_CONNECTED) return;
-
   if(!ws.available() && millis()-lastReconnect>5000){
-
+    Serial.println("Reconnecting WebSocket...");
     ws.connect(WS_SERVER);
     ws.send("{\"type\":\"espInit\"}");
-
     lastReconnect = millis();
   }
 }
 
+// ===== Setup =====
 void setup(){
-
   Serial.begin(115200);
-
+  Serial.println("Starting ESP32 Smart Home...");
   loadState();
-
   connectWiFi();
 
   SerialBT.begin("ESP32_SmartHome");
+  Serial.println("Bluetooth started");
 
   ws.onMessage(onMessage);
   ws.connect(WS_SERVER);
@@ -257,40 +216,37 @@ void setup(){
   xTaskCreatePinnedToCore(VoiceTask,"VoiceTask",4096,NULL,1,&VoiceTaskHandle,1);
 }
 
+// ===== Loop =====
 void loop(){
-
   ws.poll();
   ensureWS();
 
+  // Bluetooth control
   if(SerialBT.available()){
-
     String cmd = SerialBT.readStringUntil('\n');
     cmd.trim();
-
     int sep = cmd.indexOf(':');
-
     if(sep>0){
-
       int id = cmd.substring(0,sep).toInt();
       int state = cmd.substring(sep+1).toInt();
-
+      Serial.printf("BT command received: relay %d -> %d\n", id, state);
       updateRelay(id,state!=0);
     }
   }
 
-  if(WiFi.status()!=WL_CONNECTED){
+  // WiFi reconnect every 10s
+  if(WiFi.status() != WL_CONNECTED && millis() - lastWiFiAttempt > WIFI_RETRY_INTERVAL){
+    Serial.println("WiFi disconnected, reconnecting...");
     connectWiFi();
-    delay(500);
+    lastWiFiAttempt = millis();
   }
 
   static unsigned long lastStatus=0;
-
   if(millis()-lastStatus>=1000){
     sendStatus();
     lastStatus=millis();
   }
 
   checkTimers();
-
   delay(50);
 }
