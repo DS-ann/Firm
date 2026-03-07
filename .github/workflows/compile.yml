@@ -17,12 +17,12 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
 
-      - name: Setup Arduino CLI
+      - name: Setup Arduino
         run: |
           arduino-cli config init
           arduino-cli core update-index
 
-      - name: Install ESP32 board package
+      - name: Install ESP32 core
         run: |
           arduino-cli core install esp32:esp32
 
@@ -31,13 +31,20 @@ jobs:
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "ArduinoWebsockets"
 
-      - name: Compile ESP32 sketch
+      - name: Compile firmware
         run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32 .
+          arduino-cli compile \
+          --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+          --output-dir build \
+          .
 
-      - name: Upload firmware artifact
+      - name: Prepare flash files
+        run: |
+          mkdir firmware
+          cp build/*.bin firmware/
+
+      - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: esp32-firmware
-          path: |
-            build
+          path: firmware
