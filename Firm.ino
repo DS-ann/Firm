@@ -12,7 +12,7 @@ const char* passwordList[] = {"debarghya","PASS_2","PASS_3","PASS_4"};
 const int numNetworks = 4;
 
 // ===== Server =====
-const char* WS_SERVER = "ws://ranjanas-esp.onrender.com/";  // changed to ws
+const char* WS_SERVER = "ws://ranjanas-esp.onrender.com/"; // using ws
 WebsocketsClient ws;
 
 // ===== Device ID =====
@@ -36,20 +36,20 @@ TaskHandle_t VoiceTaskHandle;
 
 void VoiceTask(void * pvParameters){
   for(;;){
-    vTaskDelay(1000 / portTICK_PERIOD_MS); // placeholder
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
-// ===== WiFi =====
+// ===== WiFi connect =====
 void connectWiFi(){
   for(int i=0;i<numNetworks;i++){
     Serial.printf("Trying WiFi: %s\n", ssidList[i]);
     WiFi.begin(ssidList[i], passwordList[i]);
     unsigned long startAttempt = millis();
-    while(WiFi.status()!=WL_CONNECTED && millis()-startAttempt<10000){
+    while(WiFi.status() != WL_CONNECTED && millis()-startAttempt < 10000){
       delay(500);
     }
-    if(WiFi.status()==WL_CONNECTED){
+    if(WiFi.status() == WL_CONNECTED){
       Serial.printf("Connected to WiFi: %s\n", ssidList[i]);
       return;
     }
@@ -57,17 +57,14 @@ void connectWiFi(){
   Serial.println("Failed to connect to any WiFi");
 }
 
-// ===== Preferences =====
+// ===== Save / Load state =====
 void saveState(){
   preferences.begin("relayState", false);
   char key[6];
   for(int i=0;i<NUM_RELAYS;i++){
-    sprintf(key,"r%d",i);
-    preferences.putBool(key, relayState[i]);
-    sprintf(key,"t%d",i);
-    preferences.putULong(key, relayEndTime[i]);
-    sprintf(key,"u%d",i);
-    preferences.putULong(key, relayUsage[i]);
+    sprintf(key,"r%d",i); preferences.putBool(key, relayState[i]);
+    sprintf(key,"t%d",i); preferences.putULong(key, relayEndTime[i]);
+    sprintf(key,"u%d",i); preferences.putULong(key, relayUsage[i]);
   }
   preferences.end();
 }
@@ -76,41 +73,36 @@ void loadState(){
   preferences.begin("relayState", true);
   char key[6];
   for(int i=0;i<NUM_RELAYS;i++){
-    sprintf(key,"r%d",i);
-    relayState[i] = preferences.getBool(key,false);
-    sprintf(key,"t%d",i);
-    relayEndTime[i] = preferences.getULong(key,0);
-    sprintf(key,"u%d",i);
-    relayUsage[i] = preferences.getULong(key,0);
+    sprintf(key,"r%d",i); relayState[i] = preferences.getBool(key,false);
+    sprintf(key,"t%d",i); relayEndTime[i] = preferences.getULong(key,0);
+    sprintf(key,"u%d",i); relayUsage[i] = preferences.getULong(key,0);
 
     pinMode(relayPins[i], OUTPUT);
     // Active LOW: LOW = ON, HIGH = OFF
     digitalWrite(relayPins[i], relayState[i] ? LOW : HIGH);
 
-    if(relayEndTime[i] > millis()){
+    if(relayEndTime[i] > millis())
       relayTimers[i] = relayEndTime[i] - millis();
-    } else {
+    else
       relayTimers[i] = 0;
-    }
   }
   preferences.end();
 }
 
-// ===== Relay =====
+// ===== Relay update =====
 void updateRelay(int id,bool state){
   if(id<0 || id>=NUM_RELAYS) return;
 
-  Serial.printf("Updating relay %d -> %s\n", id, state ? "ON":"OFF");
+  Serial.printf("Updating relay %d -> %s\n", id, state?"ON":"OFF");
 
   if(state && !relayState[id]) relayStartTime[id] = millis();
   if(!state && relayState[id]) relayUsage[id] += millis() - relayStartTime[id];
 
   relayState[id] = state;
   digitalWrite(relayPins[id], state ? LOW : HIGH); // Active LOW
-
   saveState();
 
-  if(ws.isConnected()){
+  if(ws.available()){
     DynamicJsonDocument doc(256);
     doc["type"]="relay";
     doc["id"]=id;
@@ -121,7 +113,7 @@ void updateRelay(int id,bool state){
   }
 }
 
-// ===== Timers =====
+// ===== Timer check =====
 void checkTimers(){
   static unsigned long lastCheck=0;
   unsigned long now=millis();
@@ -138,9 +130,9 @@ void checkTimers(){
   }
 }
 
-// ===== Status =====
+// ===== Send status =====
 void sendStatus(){
-  if(!ws.isConnected()) return;
+  if(!ws.available()) return;
 
   DynamicJsonDocument doc(1024);
   doc["type"]="status";
@@ -151,17 +143,24 @@ void sendStatus(){
   JsonArray timers = doc.createNestedArray("timers");
   for(int i=0;i<NUM_RELAYS;i++) timers.add(relayTimers[i]/1000);
 
+  JsonArray usageArr = doc.createNestedArray("usageStats");
+  for(int i=0;i<NUM_RELAYS;i++){
+    JsonObject u = usageArr.createNestedObject();
+    u["last"]="--";
+    u["today"]=relayUsage[i]/60000;
+    u["total"]=relayUsage[i]/60000;
+  }
+
   doc["wifiNum"]=1;
   doc["rssi"]=WiFi.RSSI();
 
   String out;
   serializeJson(doc,out);
   ws.send(out);
-
   Serial.println("Status sent to server");
 }
 
-// ===== WebSocket =====
+// ===== WebSocket messages =====
 void onMessage(WebsocketsMessage msg){
   DynamicJsonDocument doc(512);
   deserializeJson(doc,msg.data());
@@ -170,10 +169,9 @@ void onMessage(WebsocketsMessage msg){
   if(strcmp(type,"toggle")==0){
     int id = doc["relay"];
     bool state = doc["state"];
-    Serial.printf("WS toggle received: relay %d -> %s\n", id, state ? "ON":"OFF");
+    Serial.printf("WS toggle received: relay %d -> %s\n", id, state?"ON":"OFF");
     updateRelay(id,state);
-  }
-  else if(strcmp(type,"setTimer")==0){
+  } else if(strcmp(type,"setTimer")==0){
     int id = doc["id"];
     unsigned long sec = doc["sec"];
     relayTimers[id] = sec*1000;
@@ -183,10 +181,11 @@ void onMessage(WebsocketsMessage msg){
   }
 }
 
+// ===== Ensure WebSocket =====
 void ensureWS(){
   static unsigned long lastReconnect=0;
-  if(WiFi.status()!=WL_CONNECTED) return;
-  if(!ws.isConnected() && millis()-lastReconnect>5000){
+  if(WiFi.status() != WL_CONNECTED) return;
+  if(!ws.available() && millis()-lastReconnect>5000){
     Serial.println("Reconnecting WebSocket...");
     ws.connect(WS_SERVER);
     ws.send("{\"type\":\"espInit\"}");
