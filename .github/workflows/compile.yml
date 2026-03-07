@@ -9,23 +9,28 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Step 2: Install Arduino CLI
       - name: Install Arduino CLI
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
 
+      # Step 3: Initialize Arduino CLI
       - name: Setup Arduino CLI
         run: |
           arduino-cli config init
           arduino-cli core update-index
 
+      # Step 4: Install ESP32 core
       - name: Install ESP32 core
         run: |
           arduino-cli core install esp32:esp32
 
+      # Step 5: Install all required libraries
       - name: Install required libraries
         run: |
           arduino-cli lib install "ArduinoJson"
@@ -33,31 +38,22 @@ jobs:
           arduino-cli lib install "ESP32SpeechRecognition"
           arduino-cli lib install "ESP32_TTS"
 
+      # Step 6: Compile firmware
       - name: Compile firmware
         run: |
           arduino-cli compile \
-          --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+          --fqbn esp32:esp32:esp32 \
+          --build-properties partition_scheme=huge_app \
           --output-dir build \
           .
 
+      # Step 7: Prepare flash files
       - name: Prepare flash files
         run: |
           mkdir -p firmware
           cp build/*.bin firmware/
 
-      - name: Upload firmware
-        uses: actions/upload-artifact@v4
-        with:
-          name: esp32-firmware
-          path: firmware          --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
-          --output-dir build \
-          .
-
-      - name: Prepare flash files
-        run: |
-          mkdir firmware
-          cp build/*.bin firmware/
-
+      # Step 8: Upload compiled firmware artifact
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
