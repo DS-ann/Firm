@@ -1,244 +1,164 @@
-#include <WiFi.h>
-#include <Preferences.h>
-#include <BluetoothSerial.h>
-#include <ArduinoWebsockets.h>
-#include <ArduinoJson.h>
+#include <Arduino.h>
+#include "ESP32SpeechRecognition.h"
+#include "ESP32_TTS.h"  // Offline TTS library
+#include <driver/i2s.h>
 
-using namespace websockets;
+// Pin definitions for devices
+#define ROOM1_LIGHT  13
+#define ROOM1_FAN    4
+#define ROOM2_LIGHT  19
+#define ROOM2_FAN    21
 
-// ===== WiFi =====
-const char* ssidList[] = {"Lenovo","SSID_2","SSID_3","SSID_4"};
-const char* passwordList[] = {"debarghya","PASS_2","PASS_3","PASS_4"};
-const int numNetworks = 4;
+// I2S microphone pins
+#define I2S_SD   32  // Data out
+#define I2S_SCK  14  // Bit clock
+#define I2S_WS   15  // Word select / LRC
 
-// ===== Server =====
-const char* WS_SERVER = "ws://ranjanas-esp.onrender.com/"; // using ws
-WebsocketsClient ws;
+// TTS speaker pin (DAC1)
+#define SPEAKER_PIN 25
 
-// ===== Device ID =====
-String deviceID = String((uint32_t)ESP.getEfuseMac(), HEX);
+// Initialize recognizer and TTS
+SpeechRecognizer recognizer;
+ESP32_TTS tts;
 
-// ===== Relays =====
-#define NUM_RELAYS 8
-const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
-bool relayState[NUM_RELAYS];
-unsigned long relayTimers[NUM_RELAYS];
-unsigned long relayEndTime[NUM_RELAYS];
-unsigned long relayUsage[NUM_RELAYS];
-unsigned long relayStartTime[NUM_RELAYS];
+unsigned long activeStartTime = 0;
+const unsigned long ACTIVE_DURATION = 5 * 60 * 1000; // 5 minutes
+bool isActive = false;
 
-// ===== Preferences =====
-Preferences preferences;
+void setup() {
+  Serial.begin(115200);
 
-// ===== Bluetooth =====
-BluetoothSerial SerialBT;
-TaskHandle_t VoiceTaskHandle;
+  // Set pins as output
+  pinMode(ROOM1_LIGHT, OUTPUT);
+  pinMode(ROOM1_FAN, OUTPUT);
+  pinMode(ROOM2_LIGHT, OUTPUT);
+  pinMode(ROOM2_FAN, OUTPUT);
 
-void VoiceTask(void * pvParameters){
-  for(;;){
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
+  // Set all relays to OFF initially (active LOW)
+  digitalWrite(ROOM1_LIGHT, HIGH);
+  digitalWrite(ROOM1_FAN, HIGH);
+  digitalWrite(ROOM2_LIGHT, HIGH);
+  digitalWrite(ROOM2_FAN, HIGH);
+
+  // Setup I2S for INMP441
+  i2s_config_t i2s_config = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+    .communication_format = I2S_COMM_FORMAT_I2S_MSB,
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+    .dma_buf_count = 4,
+    .dma_buf_len = 1024,
+    .use_apll = false
+  };
+
+  i2s_pin_config_t pin_config = {
+    .bck_io_num = I2S_SCK,
+    .ws_io_num = I2S_WS,
+    .data_out_num = I2S_PIN_NO_CHANGE,
+    .data_in_num = I2S_SD
+  };
+
+  i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+  i2s_set_pin(I2S_NUM_0, &pin_config);
+  Serial.println("INMP441 ready on ESP32!");
+
+  // Start TTS on DAC1
+  tts.begin(SPEAKER_PIN);
+
+  // Start recognizer
+  recognizer.begin();
+
+  // Add commands
+  recognizer.addCommand("hey esp"); // Wake word
+
+  // Single device commands
+  recognizer.addCommand("room 1 light on");
+  recognizer.addCommand("room 1 light off");
+  recognizer.addCommand("room 1 fan on");
+  recognizer.addCommand("room 1 fan off");
+  recognizer.addCommand("room 2 light on");
+  recognizer.addCommand("room 2 light off");
+  recognizer.addCommand("room 2 fan on");
+  recognizer.addCommand("room 2 fan off");
+
+  // Multi-device commands
+  recognizer.addCommand("turn on room 1 light and fan");
+  recognizer.addCommand("turn off room 1 light and fan");
+  recognizer.addCommand("turn on room 2 light and fan");
+  recognizer.addCommand("turn off room 2 light and fan");
+
+  Serial.println("ESP32 ready for voice control...");
 }
 
-// ===== WiFi connect =====
-void connectWiFi(){
-  for(int i=0;i<numNetworks;i++){
-    Serial.printf("Trying WiFi: %s\n", ssidList[i]);
-    WiFi.begin(ssidList[i], passwordList[i]);
-    unsigned long startAttempt = millis();
-    while(WiFi.status() != WL_CONNECTED && millis()-startAttempt < 10000){
+void loop() {
+  // Listen offline via INMP441
+  String command = recognizer.listen();
+
+  if (command.length() > 0) {
+    Serial.println("Recognized: " + command);
+
+    // Wake word
+    if (command == "hey esp") {
+      tts.speak("Welcome to Ranjana's home");
+      isActive = true;
+      activeStartTime = millis();
+      Serial.println("Wake word detected. Listening for 5 minutes...");
       delay(500);
-    }
-    if(WiFi.status() == WL_CONNECTED){
-      Serial.printf("Connected to WiFi: %s\n", ssidList[i]);
       return;
     }
-  }
-  Serial.println("Failed to connect to any WiFi");
-}
 
-// ===== Save / Load state =====
-void saveState(){
-  preferences.begin("relayState", false);
-  char key[6];
-  for(int i=0;i<NUM_RELAYS;i++){
-    sprintf(key,"r%d",i); preferences.putBool(key, relayState[i]);
-    sprintf(key,"t%d",i); preferences.putULong(key, relayEndTime[i]);
-    sprintf(key,"u%d",i); preferences.putULong(key, relayUsage[i]);
-  }
-  preferences.end();
-}
+    // Process commands if active
+    if (isActive) {
+      activeStartTime = millis(); // Reset timer
 
-void loadState(){
-  preferences.begin("relayState", true);
-  char key[6];
-  for(int i=0;i<NUM_RELAYS;i++){
-    sprintf(key,"r%d",i); relayState[i] = preferences.getBool(key,false);
-    sprintf(key,"t%d",i); relayEndTime[i] = preferences.getULong(key,0);
-    sprintf(key,"u%d",i); relayUsage[i] = preferences.getULong(key,0);
+      // Room prompts
+      if (command.startsWith("room 1") || command.indexOf("room 1") >= 0) {
+        tts.speak("Listening Room 1");
+        delay(300);
+      }
 
-    pinMode(relayPins[i], OUTPUT);
-    // Active LOW: LOW = ON, HIGH = OFF
-    digitalWrite(relayPins[i], relayState[i] ? LOW : HIGH);
+      if (command.startsWith("room 2") || command.indexOf("room 2") >= 0) {
+        tts.speak("Listening Room 2");
+        delay(300);
+      }
 
-    if(relayEndTime[i] > millis())
-      relayTimers[i] = relayEndTime[i] - millis();
-    else
-      relayTimers[i] = 0;
-  }
-  preferences.end();
-}
+      // Room 1 single device (active LOW)
+      if (command == "room 1 light on") digitalWrite(ROOM1_LIGHT, LOW);
+      if (command == "room 1 light off") digitalWrite(ROOM1_LIGHT, HIGH);
+      if (command == "room 1 fan on") digitalWrite(ROOM1_FAN, LOW);
+      if (command == "room 1 fan off") digitalWrite(ROOM1_FAN, HIGH);
 
-// ===== Relay update =====
-void updateRelay(int id,bool state){
-  if(id<0 || id>=NUM_RELAYS) return;
+      // Room 2 single device (active LOW)
+      if (command == "room 2 light on") digitalWrite(ROOM2_LIGHT, LOW);
+      if (command == "room 2 light off") digitalWrite(ROOM2_LIGHT, HIGH);
+      if (command == "room 2 fan on") digitalWrite(ROOM2_FAN, LOW);
+      if (command == "room 2 fan off") digitalWrite(ROOM2_FAN, HIGH);
 
-  Serial.printf("Updating relay %d -> %s\n", id, state?"ON":"OFF");
-
-  if(state && !relayState[id]) relayStartTime[id] = millis();
-  if(!state && relayState[id]) relayUsage[id] += millis() - relayStartTime[id];
-
-  relayState[id] = state;
-  digitalWrite(relayPins[id], state ? LOW : HIGH); // Active LOW
-  saveState();
-
-  if(ws.available()){
-    DynamicJsonDocument doc(256);
-    doc["type"]="relay";
-    doc["id"]=id;
-    doc["state"]=state;
-    String out;
-    serializeJson(doc,out);
-    ws.send(out);
-  }
-}
-
-// ===== Timer check =====
-void checkTimers(){
-  static unsigned long lastCheck=0;
-  unsigned long now=millis();
-  if(now-lastCheck>=1000){
-    lastCheck = now;
-    for(int i=0;i<NUM_RELAYS;i++){
-      if(relayEndTime[i]>now){
-        relayTimers[i] = relayEndTime[i] - now;
-      } else if(relayTimers[i]>0){
-        relayTimers[i]=0;
-        updateRelay(i,false);
+      // Multi-step commands (active LOW)
+      if (command == "turn on room 1 light and fan") {
+        digitalWrite(ROOM1_LIGHT, LOW);
+        digitalWrite(ROOM1_FAN, LOW);
+      }
+      if (command == "turn off room 1 light and fan") {
+        digitalWrite(ROOM1_LIGHT, HIGH);
+        digitalWrite(ROOM1_FAN, HIGH);
+      }
+      if (command == "turn on room 2 light and fan") {
+        digitalWrite(ROOM2_LIGHT, LOW);
+        digitalWrite(ROOM2_FAN, LOW);
+      }
+      if (command == "turn off room 2 light and fan") {
+        digitalWrite(ROOM2_LIGHT, HIGH);
+        digitalWrite(ROOM2_FAN, HIGH);
       }
     }
   }
-}
 
-// ===== Send status =====
-void sendStatus(){
-  if(!ws.available()) return;
-
-  DynamicJsonDocument doc(1024);
-  doc["type"]="status";
-
-  JsonArray rel = doc.createNestedArray("relays");
-  for(int i=0;i<NUM_RELAYS;i++) rel.add(relayState[i]);
-
-  JsonArray timers = doc.createNestedArray("timers");
-  for(int i=0;i<NUM_RELAYS;i++) timers.add(relayTimers[i]/1000);
-
-  JsonArray usageArr = doc.createNestedArray("usageStats");
-  for(int i=0;i<NUM_RELAYS;i++){
-    JsonObject u = usageArr.createNestedObject();
-    u["last"]="--";
-    u["today"]=relayUsage[i]/60000;
-    u["total"]=relayUsage[i]/60000;
+  // Deactivate after 5 minutes
+  if (isActive && (millis() - activeStartTime > 5 * 60 * 1000)) {
+    isActive = false;
+    Serial.println("5 minutes passed. Back to wake word mode...");
   }
-
-  doc["wifiNum"]=1;
-  doc["rssi"]=WiFi.RSSI();
-
-  String out;
-  serializeJson(doc,out);
-  ws.send(out);
-  Serial.println("Status sent to server");
-}
-
-// ===== WebSocket messages =====
-void onMessage(WebsocketsMessage msg){
-  DynamicJsonDocument doc(512);
-  deserializeJson(doc,msg.data());
-  const char* type = doc["type"];
-
-  if(strcmp(type,"toggle")==0){
-    int id = doc["relay"];
-    bool state = doc["state"];
-    Serial.printf("WS toggle received: relay %d -> %s\n", id, state?"ON":"OFF");
-    updateRelay(id,state);
-  } else if(strcmp(type,"setTimer")==0){
-    int id = doc["id"];
-    unsigned long sec = doc["sec"];
-    relayTimers[id] = sec*1000;
-    relayEndTime[id] = millis() + relayTimers[id];
-    if(sec>0) updateRelay(id,true);
-    saveState();
-  }
-}
-
-// ===== Ensure WebSocket =====
-void ensureWS(){
-  static unsigned long lastReconnect=0;
-  if(WiFi.status() != WL_CONNECTED) return;
-  if(!ws.available() && millis()-lastReconnect>5000){
-    Serial.println("Reconnecting WebSocket...");
-    ws.connect(WS_SERVER);
-    ws.send("{\"type\":\"espInit\"}");
-    lastReconnect = millis();
-  }
-}
-
-// ===== Setup =====
-void setup(){
-  Serial.begin(115200);
-  Serial.println("Starting ESP32 Smart Home...");
-  loadState();
-  connectWiFi();
-
-  SerialBT.begin("ESP32_SmartHome");
-  Serial.println("Bluetooth started");
-
-  ws.onMessage(onMessage);
-  ws.connect(WS_SERVER);
-  ws.send("{\"type\":\"espInit\"}");
-
-  xTaskCreatePinnedToCore(VoiceTask,"VoiceTask",4096,NULL,1,&VoiceTaskHandle,1);
-}
-
-// ===== Loop =====
-void loop(){
-  ws.poll();
-  ensureWS();
-
-  if(SerialBT.available()){
-    String cmd = SerialBT.readStringUntil('\n');
-    cmd.trim();
-    int sep = cmd.indexOf(':');
-    if(sep>0){
-      int id = cmd.substring(0,sep).toInt();
-      int state = cmd.substring(sep+1).toInt();
-      Serial.printf("BT command received: relay %d -> %d\n", id, state);
-      updateRelay(id,state!=0);
-    }
-  }
-
-  if(WiFi.status()!=WL_CONNECTED){
-    Serial.println("WiFi disconnected, reconnecting...");
-    connectWiFi();
-    delay(500);
-  }
-
-  static unsigned long lastStatus=0;
-  if(millis()-lastStatus>=1000){
-    sendStatus();
-    lastStatus=millis();
-  }
-
-  checkTimers();
-  delay(50);
 }
