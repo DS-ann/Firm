@@ -10,30 +10,28 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup Arduino CLI
-        uses: arduino/setup-arduino-cli@v1
+        uses: arduino/setup-arduino-cli@v2
 
       - name: Cache Arduino packages
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.arduino15
             ~/Arduino
           key: ${{ runner.os }}-arduino-cache
 
-      - name: Update core index
+      - name: Update Arduino index
         run: arduino-cli core update-index
 
       - name: Install ESP32 core
         run: arduino-cli core install esp32:esp32
 
-      - name: Create libraries folder
-        run: mkdir -p libraries
-
       - name: Download TensorFlow ESP32 library
         run: |
+          mkdir -p libraries
           git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git libraries/Arduino_TensorFlowLite_ESP32
 
       - name: Detect sketch
@@ -50,7 +48,7 @@ jobs:
           ${{ steps.sketch.outputs.sketch }}
 
       - name: Upload firmware
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: esp32-firmware
           path: build
