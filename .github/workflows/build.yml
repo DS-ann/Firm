@@ -1,4 +1,4 @@
-name: ESP32 Arduino Build
+name: ESP32 Auto Arduino Build
 
 on:
   push:
@@ -23,13 +23,19 @@ jobs:
             ~/Arduino
           key: ${{ runner.os }}-arduino-cache
 
-      - name: Update Arduino index
+      - name: Update index
         run: arduino-cli core update-index
 
       - name: Install ESP32 core
         run: arduino-cli core install esp32:esp32
 
-      - name: Download TensorFlow ESP32 library
+      - name: Install standard libraries
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install ArduinoJson || true
+          arduino-cli lib install WiFi || true
+
+      - name: Install TensorFlow ESP32 library
         run: |
           mkdir -p libraries
           git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git libraries/Arduino_TensorFlowLite_ESP32
@@ -43,9 +49,10 @@ jobs:
       - name: Compile sketch
         run: |
           arduino-cli compile \
-          --fqbn esp32:esp32:nodemcu-32s \
-          --output-dir build \
-          ${{ steps.sketch.outputs.sketch }}
+            --fqbn esp32:esp32:nodemcu-32s \
+            --libraries libraries \
+            --output-dir build \
+            ${{ steps.sketch.outputs.sketch }}
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
