@@ -26,15 +26,14 @@ jobs:
       - name: Update Arduino index
         run: arduino-cli core update-index
 
-      - name: Install compatible ESP32 core
+      - name: Install ESP32 core
         run: |
           arduino-cli core install esp32:esp32@2.0.17
 
-      - name: Install TensorFlowLite ESP32 library
+      - name: Install library dependencies
         run: |
-          git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git
           mkdir -p ~/Arduino/libraries
-          mv Arduino_TensorFlowLite_ESP32 ~/Arduino/libraries/
+          cp -r . ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32
 
       - name: Compile micro_speech example
         run: |
