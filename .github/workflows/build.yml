@@ -1,4 +1,4 @@
-name: Build ESP32 TensorFlow Firmware
+name: Build ESP32 Smart Home Firmware
 
 on:
   push:
@@ -9,12 +9,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout your repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2️⃣ Setup Arduino CLI
       - name: Setup Arduino CLI
         uses: arduino/setup-arduino-cli@v2
 
+      # 3️⃣ Cache Arduino packages & libraries
       - name: Cache Arduino packages
         uses: actions/cache@v4
         with:
@@ -23,27 +26,36 @@ jobs:
             ~/Arduino
           key: ${{ runner.os }}-arduino-cache
 
+      # 4️⃣ Update Arduino core index
       - name: Update Arduino index
         run: arduino-cli core update-index
 
-      - name: Install ESP32 core
-        run: |
-          arduino-cli core install esp32:esp32@2.0.17
+      # 5️⃣ Install ESP32 core
+      - name: Install ESP32 Core
+        run: arduino-cli core install esp32:esp32@3.3.7
 
-      - name: Install library dependencies
+      # 6️⃣ Install required libraries
+      - name: Install Libraries
         run: |
-          mkdir -p ~/Arduino/libraries
-          cp -r . ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32
+          arduino-cli lib install "WiFi"
+          arduino-cli lib install "Preferences"
+          arduino-cli lib install "BluetoothSerial"
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "PubSubClient"
+          arduino-cli lib install "WiFiClientSecure"
 
-      - name: Compile micro_speech example
+      # 7️⃣ Compile firmware (root .ino)
+      - name: Compile ESP32 Firmware
         run: |
+          mkdir -p build
           arduino-cli compile \
-          --fqbn esp32:esp32:nodemcu-32s \
-          --output-dir build \
-          ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32/examples/micro_speech
+            --fqbn esp32:esp32:nodemcu-32s \
+            --output-dir build \
+            ESP32_SmartHome.ino
 
+      # 8️⃣ Upload compiled firmware as artifact
       - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: esp32-tflite-micro-speech
+          name: esp32-smart-home-firmware
           path: build
