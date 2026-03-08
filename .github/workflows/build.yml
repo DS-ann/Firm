@@ -1,4 +1,4 @@
-name: Build TensorFlow ESP32 Example
+name: Build ESP32 TensorFlow Firmware
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Arduino CLI
@@ -21,7 +21,7 @@ jobs:
           path: |
             ~/.arduino15
             ~/Arduino
-          key: ${{ runner.os }}-arduino-cache
+          key: ${{ runner.os }}-arduino-${{ hashFiles('**/*.ino') }}
 
       - name: Update Arduino index
         run: arduino-cli core update-index
@@ -29,18 +29,21 @@ jobs:
       - name: Install ESP32 core
         run: arduino-cli core install esp32:esp32
 
-      - name: Install TensorFlowLite ESP32
+      - name: Install TensorFlowLite ESP32 library
         run: |
-          arduino-cli lib install --git-url https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git
+          git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git
+          mkdir -p ~/Arduino/libraries
+          mv Arduino_TensorFlowLite_ESP32 ~/Arduino/libraries/
 
       - name: Compile micro_speech example
         run: |
           arduino-cli compile \
           --fqbn esp32:esp32:nodemcu-32s \
+          --output-dir build \
           ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32/examples/micro_speech
 
-      - name: Upload firmware
+      - name: Upload compiled firmware
         uses: actions/upload-artifact@v4
         with:
-          name: esp32-micro-speech
-          path: ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32/examples/micro_speech/build
+          name: esp32-tflite-micro-speech
+          path: build
