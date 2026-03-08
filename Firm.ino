@@ -1,177 +1,256 @@
-#include <TensorFlowLite_ESP32.h>
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+#include <WiFi.h>
+#include <Preferences.h>
+#include <BluetoothSerial.h>
+#include <ArduinoJson.h>
+#include <PubSubClient.h>
+#include <WiFiClientSecure.h>
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
+// ===== WiFi =====
+const char* ssidList[] = {"Lenovo","SSID_2","SSID_3","SSID_4"};
+const char* passwordList[] = {"debarghya","PASS_2","PASS_3","PASS_4"};
+const int numNetworks = 4;
 
-    http://www.apache.org/licenses/LICENSE-2.0
+// ===== MQTT =====
+const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
+const int mqttPort = 8883; // TLS
+const char* mqttUser = "Debarghya_Sannigrahi";
+const char* mqttPassword = "Dsann#5956";
+const char* mqttCommandTopic = "home/esp32/commands";
+const char* mqttStatusTopic = "home/esp32/status";
 
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-==============================================================================*/
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
 
-#include "main_functions.h"
+// ===== Device ID =====
+String deviceID = String((uint32_t)ESP.getEfuseMac(), HEX);
 
-#include "audio_provider.h"
-#include "command_responder.h"
-#include "feature_provider.h"
-#include "micro_model_settings.h"
-#include "model.h"
-#include "recognize_commands.h"
-#include "tensorflow/lite/micro/micro_error_reporter.h"
-#include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
-#include "tensorflow/lite/micro/system_setup.h"
-#include "tensorflow/lite/schema/schema_generated.h"
+// ===== Relays =====
+#define NUM_RELAYS 8
+const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
+bool relayState[NUM_RELAYS];
+unsigned long relayTimers[NUM_RELAYS];
+unsigned long relayEndTime[NUM_RELAYS];
+unsigned long relayUsage[NUM_RELAYS];
+unsigned long relayStartTime[NUM_RELAYS];
 
-// Globals, used for compatibility with Arduino-style sketches.
-namespace {
-tflite::ErrorReporter* error_reporter = nullptr;
-const tflite::Model* model = nullptr;
-tflite::MicroInterpreter* interpreter = nullptr;
-TfLiteTensor* model_input = nullptr;
-FeatureProvider* feature_provider = nullptr;
-RecognizeCommands* recognizer = nullptr;
-int32_t previous_time = 0;
+// ===== Preferences =====
+Preferences preferences;
 
-// Create an area of memory to use for input, output, and intermediate arrays.
-// The size of this will depend on the model you're using, and may need to be
-// determined by experimentation.
-constexpr int kTensorArenaSize = 30 * 1024;
-uint8_t tensor_arena[kTensorArenaSize];
-int8_t feature_buffer[kFeatureElementCount];
-int8_t* model_input_buffer = nullptr;
-}  // namespace
+// ===== Bluetooth =====
+BluetoothSerial SerialBT;
+TaskHandle_t VoiceTaskHandle;
 
-// The name of this function is important for Arduino compatibility.
-void setup() {
-
-  // Set up logging. Google style is to avoid globals or statics because of
-  // lifetime uncertainty, but since this has a trivial destructor it's okay.
-  // NOLINTNEXTLINE(runtime-global-variables)
-  static tflite::MicroErrorReporter micro_error_reporter;
-  error_reporter = &micro_error_reporter;
-
-  // Map the model into a usable data structure. This doesn't involve any
-  // copying or parsing, it's a very lightweight operation.
-  model = tflite::GetModel(g_model);
-  if (model->version() != TFLITE_SCHEMA_VERSION) {
-    TF_LITE_REPORT_ERROR(error_reporter,
-                         "Model provided is schema version %d not equal "
-                         "to supported version %d.",
-                         model->version(), TFLITE_SCHEMA_VERSION);
-    return;
+void VoiceTask(void * pvParameters){
+  for(;;){
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
-
-  // Pull in only the operation implementations we need.
-  // This relies on a complete list of all the ops needed by this graph.
-  // An easier approach is to just use the AllOpsResolver, but this will
-  // incur some penalty in code space for op implementations that are not
-  // needed by this graph.
-  //
-  // tflite::AllOpsResolver resolver;
-  // NOLINTNEXTLINE(runtime-global-variables)
-  static tflite::MicroMutableOpResolver<4> micro_op_resolver(error_reporter);
-  if (micro_op_resolver.AddDepthwiseConv2D() != kTfLiteOk) {
-    return;
-  }
-  if (micro_op_resolver.AddFullyConnected() != kTfLiteOk) {
-    return;
-  }
-  if (micro_op_resolver.AddSoftmax() != kTfLiteOk) {
-    return;
-  }
-  if (micro_op_resolver.AddReshape() != kTfLiteOk) {
-    return;
-  }
-
-  // Build an interpreter to run the model with.
-  static tflite::MicroInterpreter static_interpreter(
-      model, micro_op_resolver, tensor_arena, kTensorArenaSize, error_reporter);
-  interpreter = &static_interpreter;
-
-  // Allocate memory from the tensor_arena for the model's tensors.
-  TfLiteStatus allocate_status = interpreter->AllocateTensors();
-  if (allocate_status != kTfLiteOk) {
-    TF_LITE_REPORT_ERROR(error_reporter, "AllocateTensors() failed");
-    return;
-  }
-
-  // Get information about the memory area to use for the model's input.
-  model_input = interpreter->input(0);
-  if ((model_input->dims->size != 2) || (model_input->dims->data[0] != 1) ||
-      (model_input->dims->data[1] !=
-       (kFeatureSliceCount * kFeatureSliceSize)) ||
-      (model_input->type != kTfLiteInt8)) {
-    TF_LITE_REPORT_ERROR(error_reporter,
-                         "Bad input tensor parameters in model");
-    return;
-  }
-  model_input_buffer = model_input->data.int8;
-
-  // Prepare to access the audio spectrograms from a microphone or other source
-  // that will provide the inputs to the neural network.
-  // NOLINTNEXTLINE(runtime-global-variables)
-  static FeatureProvider static_feature_provider(kFeatureElementCount,
-                                                 feature_buffer);
-  feature_provider = &static_feature_provider;
-
-  static RecognizeCommands static_recognizer(error_reporter);
-  recognizer = &static_recognizer;
-
-  previous_time = 0;
 }
 
-// The name of this function is important for Arduino compatibility.
-void loop() {
-  // Fetch the spectrogram for the current time.
-  const int32_t current_time = LatestAudioTimestamp();
-  int how_many_new_slices = 0;
-  TfLiteStatus feature_status = feature_provider->PopulateFeatureData(
-      error_reporter, previous_time, current_time, &how_many_new_slices);
-  if (feature_status != kTfLiteOk) {
-    TF_LITE_REPORT_ERROR(error_reporter, "Feature generation failed");
-    return;
+// ===== WiFi =====
+void connectWiFi(){
+  for(int i=0;i<numNetworks;i++){
+    Serial.printf("Connecting to WiFi: %s\n", ssidList[i]);
+    WiFi.begin(ssidList[i],passwordList[i]);
+    unsigned long startAttempt = millis();
+    while(WiFi.status()!=WL_CONNECTED && millis()-startAttempt<10000){
+      delay(500);
+    }
+    if(WiFi.status()==WL_CONNECTED){
+      Serial.printf("Connected to WiFi: %s\n", ssidList[i]);
+      return;
+    }
   }
-  previous_time = current_time;
-  // If no new audio samples have been received since last time, don't bother
-  // running the network model.
-  if (how_many_new_slices == 0) {
-    return;
+  Serial.println("Failed to connect to any WiFi");
+}
+
+// ===== Preferences =====
+void saveState(){
+  preferences.begin("relayState",false);
+  char key[6];
+  for(int i=0;i<NUM_RELAYS;i++){
+    sprintf(key,"r%d",i);
+    preferences.putBool(key,relayState[i]);
+    sprintf(key,"t%d",i);
+    preferences.putULong(key,relayEndTime[i]);
+    sprintf(key,"u%d",i);
+    preferences.putULong(key,relayUsage[i]);
+  }
+  preferences.end();
+}
+
+void loadState(){
+  preferences.begin("relayState",true);
+  char key[6];
+  for(int i=0;i<NUM_RELAYS;i++){
+    sprintf(key,"r%d",i);
+    relayState[i] = preferences.getBool(key,false);
+    sprintf(key,"t%d",i);
+    relayEndTime[i] = preferences.getULong(key,0);
+    sprintf(key,"u%d",i);
+    relayUsage[i] = preferences.getULong(key,0);
+
+    pinMode(relayPins[i],OUTPUT);
+    digitalWrite(relayPins[i],relayState[i]?LOW:HIGH); // Active LOW relay
+
+    if(relayEndTime[i] > millis()){
+      relayTimers[i] = relayEndTime[i] - millis();
+    }else{
+      relayTimers[i] = 0;
+    }
+  }
+  preferences.end();
+}
+
+// ===== Relay Control =====
+void updateRelay(int id,bool state){
+  if(id<0 || id>=NUM_RELAYS) return;
+
+  if(state && !relayState[id]) relayStartTime[id] = millis();
+  if(!state && relayState[id]) relayUsage[id] += millis() - relayStartTime[id];
+
+  relayState[id] = state;
+
+  digitalWrite(relayPins[id],state?LOW:HIGH); // Active LOW
+
+  saveState();
+
+  // Publish delta
+  DynamicJsonDocument doc(256);
+  doc["type"]="relay";
+  doc["id"]=id;
+  doc["state"]=state;
+  String out;
+  serializeJson(doc,out);
+  client.publish(mqttStatusTopic,out.c_str());
+  Serial.printf("Relay %d -> %s\n", id, state?"ON":"OFF");
+}
+
+// ===== Timer Check =====
+void checkTimers(){
+  static unsigned long lastCheck=0;
+  unsigned long now=millis();
+  if(now-lastCheck>=1000){
+    lastCheck = now;
+    for(int i=0;i<NUM_RELAYS;i++){
+      if(relayEndTime[i]>now){
+        relayTimers[i] = relayEndTime[i] - now;
+      }else if(relayTimers[i]>0){
+        relayTimers[i]=0;
+        updateRelay(i,false);
+      }
+    }
+  }
+}
+
+// ===== MQTT Callback =====
+void mqttCallback(char* topic, byte* payload, unsigned int length){
+  String msg = "";
+  for(unsigned int i=0;i<length;i++) msg += (char)payload[i];
+  Serial.printf("MQTT message on %s: %s\n", topic, msg.c_str());
+
+  DynamicJsonDocument doc(256);
+  deserializeJson(doc,msg);
+  const char* type = doc["type"];
+
+  if(strcmp(type,"toggle")==0){
+    int id = doc["relay"];
+    bool state = doc["state"];
+    updateRelay(id,state);
+  }else if(strcmp(type,"setTimer")==0){
+    int id = doc["relay"];
+    unsigned long sec = doc["seconds"];
+    relayTimers[id] = sec*1000;
+    relayEndTime[id] = millis() + relayTimers[id];
+    if(sec>0) updateRelay(id,true);
+    saveState();
+  }
+}
+
+// ===== MQTT Connect =====
+void connectMQTT(){
+  espClient.setInsecure(); // Accept self-signed certs
+  client.setServer(mqttServer, mqttPort);
+  client.setCallback(mqttCallback);
+
+  while(!client.connected()){
+    Serial.println("Connecting to MQTT...");
+    if(client.connect(deviceID.c_str(), mqttUser, mqttPassword)){
+      Serial.println("Connected to MQTT");
+      client.subscribe(mqttCommandTopic);
+    }else{
+      Serial.printf("MQTT connect failed, rc=%d. Retry in 5s\n", client.state());
+      delay(5000);
+    }
+  }
+}
+
+// ===== Setup =====
+void setup(){
+  Serial.begin(115200);
+  loadState();
+  connectWiFi();
+
+  SerialBT.begin("ESP32_SmartHome");
+  Serial.println("Bluetooth started");
+
+  connectMQTT();
+
+  xTaskCreatePinnedToCore(VoiceTask,"VoiceTask",4096,NULL,1,&VoiceTaskHandle,1);
+}
+
+// ===== Loop =====
+void loop(){
+  if(WiFi.status()!=WL_CONNECTED){
+    Serial.println("WiFi disconnected, reconnecting...");
+    connectWiFi();
+    delay(500);
   }
 
-  // Copy feature buffer to input tensor
-  for (int i = 0; i < kFeatureElementCount; i++) {
-    model_input_buffer[i] = feature_buffer[i];
+  if(!client.connected()) connectMQTT();
+  client.loop();
+
+  // Bluetooth commands
+  if(SerialBT.available()){
+    String cmd = SerialBT.readStringUntil('\n');
+    cmd.trim();
+    int sep = cmd.indexOf(':');
+    if(sep>0){
+      int id = cmd.substring(0,sep).toInt();
+      int state = cmd.substring(sep+1).toInt();
+      updateRelay(id,state!=0);
+    }
   }
 
-  // Run the model on the spectrogram input and make sure it succeeds.
-  TfLiteStatus invoke_status = interpreter->Invoke();
-  if (invoke_status != kTfLiteOk) {
-    TF_LITE_REPORT_ERROR(error_reporter, "Invoke failed");
-    return;
+  // Publish full status every second
+  static unsigned long lastStatus=0;
+  if(millis()-lastStatus>=1000){
+    DynamicJsonDocument doc(1024);
+    doc["type"]="status";
+
+    JsonArray rel = doc.createNestedArray("relays");
+    for(int i=0;i<NUM_RELAYS;i++) rel.add(relayState[i]);
+
+    JsonArray timers = doc.createNestedArray("timers");
+    for(int i=0;i<NUM_RELAYS;i++) timers.add(relayTimers[i]/1000);
+
+    JsonArray usageArr = doc.createNestedArray("usageStats");
+    for(int i=0;i<NUM_RELAYS;i++){
+      JsonObject u = usageArr.createNestedObject();
+      u["last"]="--";
+      u["today"]=relayUsage[i]/60000;
+      u["total"]=relayUsage[i]/60000;
+    }
+
+    doc["wifiNum"]=1;
+    doc["rssi"]=WiFi.RSSI();
+
+    String out;
+    serializeJson(doc,out);
+    client.publish(mqttStatusTopic,out.c_str());
+
+    lastStatus=millis();
   }
 
-  // Obtain a pointer to the output tensor
-  TfLiteTensor* output = interpreter->output(0);
-  // Determine whether a command was recognized based on the output of inference
-  const char* found_command = nullptr;
-  uint8_t score = 0;
-  bool is_new_command = false;
-  TfLiteStatus process_status = recognizer->ProcessLatestResults(
-      output, current_time, &found_command, &score, &is_new_command);
-  if (process_status != kTfLiteOk) {
-    TF_LITE_REPORT_ERROR(error_reporter,
-                         "RecognizeCommands::ProcessLatestResults() failed");
-    return;
-  }
-  // Do something based on the recognized command. The default implementation
-  // just prints to the error console, but you should replace this with your
-  // own function for a real application.
-  RespondToCommand(error_reporter, current_time, found_command, score,
-                   is_new_command);
+  checkTimers();
+  delay(50);
 }
