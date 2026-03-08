@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout your repository
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -43,14 +43,17 @@ jobs:
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "PubSubClient"
 
-      # 7️⃣ Compile firmware (root .ino)
-      - name: Compile ESP32 Firmware
+      # 7️⃣ Compile firmware using huge app partition
+      - name: Compile ESP32 Firmware (Huge App)
         run: |
           mkdir -p build
           arduino-cli compile \
             --fqbn esp32:esp32:nodemcu-32s \
+            --build-property build.partitions=huge_app.csv \
+            --build-property compiler.cpp.extra_flags="-Os" \
             --output-dir build \
-            Firm.ino
+            Firm.ino \
+            --verbose
 
       # 8️⃣ Upload compiled firmware as artifact
       - name: Upload firmware artifact
