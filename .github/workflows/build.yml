@@ -26,13 +26,13 @@ jobs:
             ~/Arduino
           key: ${{ runner.os }}-arduino-cache
 
-      # 4️⃣ Update Arduino core index
+      # 4️⃣ Update Arduino index
       - name: Update Arduino index
         run: arduino-cli core update-index
 
-      # 5️⃣ Install ESP32 core (upgrade to 3.5.2 to fix huge_app bug)
+      # 5️⃣ Install ESP32 core v3.3.7
       - name: Install ESP32 Core
-        run: arduino-cli core install esp32:esp32@3.5.2
+        run: arduino-cli core install esp32:esp32@3.3.7
 
       # 6️⃣ Install required libraries
       - name: Install Libraries
@@ -43,7 +43,7 @@ jobs:
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "PubSubClient"
 
-      # 7️⃣ Compile firmware using huge app partition
+      # 7️⃣ Compile firmware (no cp command needed)
       - name: Compile ESP32 Firmware (Huge App)
         run: |
           mkdir -p build
@@ -55,8 +55,8 @@ jobs:
             Firm.ino \
             --verbose
 
-      # 8️⃣ Upload compiled firmware as artifact
-      - name: Upload firmware artifact
+      # 8️⃣ Upload artifact
+      - name: Upload compiled firmware
         uses: actions/upload-artifact@v4
         with:
           name: esp32-smart-home-firmware
