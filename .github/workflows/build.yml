@@ -21,13 +21,14 @@ jobs:
           path: |
             ~/.arduino15
             ~/Arduino
-          key: ${{ runner.os }}-arduino-${{ hashFiles('**/*.ino') }}
+          key: ${{ runner.os }}-arduino-cache
 
       - name: Update Arduino index
         run: arduino-cli core update-index
 
-      - name: Install ESP32 core
-        run: arduino-cli core install esp32:esp32
+      - name: Install compatible ESP32 core
+        run: |
+          arduino-cli core install esp32:esp32@2.0.17
 
       - name: Install TensorFlowLite ESP32 library
         run: |
@@ -42,7 +43,7 @@ jobs:
           --output-dir build \
           ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32/examples/micro_speech
 
-      - name: Upload compiled firmware
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: esp32-tflite-micro-speech
