@@ -1,0 +1,54 @@
+name: Build ESP32 Firmware
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          sudo mv bin/arduino-cli /usr/local/bin/
+
+      - name: Setup Arduino
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index
+
+      - name: Install ESP32 core
+        run: |
+          arduino-cli core install esp32:esp32
+
+      - name: Install required libraries
+        run: |
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "ArduinoWebsockets"
+          arduino-cli lib install "WiFi"
+          arduino-cli lib install "Preferences"
+          arduino-cli lib install "BluetoothSerial"
+          arduino-cli lib install "PubSubClient"
+
+      - name: Compile firmware
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+            --output-dir build \
+            .
+
+      - name: Prepare flash files
+        run: |
+          mkdir firmware
+          cp build/*.bin firmware/
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-firmware
+          path: firmware
