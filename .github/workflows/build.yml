@@ -50,7 +50,7 @@ jobs:
           arduino-cli compile \
             --fqbn esp32:esp32:nodemcu-32s \
             --output-dir build \
-            ESP32_SmartHome.ino
+            Firm.ino
 
       # 8️⃣ Upload compiled firmware as artifact
       - name: Upload firmware artifact
