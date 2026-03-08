@@ -1,0 +1,56 @@
+name: ESP32 Arduino Build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Cache Arduino packages
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino
+          key: ${{ runner.os }}-arduino-cache
+
+      - name: Update core index
+        run: arduino-cli core update-index
+
+      - name: Install ESP32 core
+        run: arduino-cli core install esp32:esp32
+
+      - name: Create libraries folder
+        run: mkdir -p libraries
+
+      - name: Download TensorFlow ESP32 library
+        run: |
+          git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git libraries/Arduino_TensorFlowLite_ESP32
+
+      - name: Detect sketch
+        id: sketch
+        run: |
+          SKETCH=$(ls *.ino | head -n 1)
+          echo "sketch=$SKETCH" >> $GITHUB_OUTPUT
+
+      - name: Compile sketch
+        run: |
+          arduino-cli compile \
+          --fqbn esp32:esp32:nodemcu-32s \
+          --output-dir build \
+          ${{ steps.sketch.outputs.sketch }}
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v3
+        with:
+          name: esp32-firmware
+          path: build
