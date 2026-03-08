@@ -42,7 +42,6 @@ jobs:
           arduino-cli lib install "BluetoothSerial"
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "PubSubClient"
-          arduino-cli lib install "WiFiClientSecure"
 
       # 7️⃣ Compile firmware (root .ino)
       - name: Compile ESP32 Firmware
