@@ -47,10 +47,6 @@ jobs:
       - name: Compile ESP32 Firmware (Huge App)
         run: |
           mkdir -p build
-          # Ensure partitions CSV exists in cache folder
-          mkdir -p ~/.arduino15/packages/esp32/hardware/esp32/3.3.7/tools/partitions
-          cp ~/.arduino15/packages/esp32/hardware/esp32/3.3.7/tools/partitions/huge_app.csv \
-             ~/.arduino15/packages/esp32/hardware/esp32/3.3.7/tools/partitions/huge_app.csv
           arduino-cli compile \
             --fqbn esp32:esp32:nodemcu-32s \
             --build-property build.partitions=huge_app.csv \
