@@ -1,15 +1,15 @@
-name: ESP32 Auto Arduino Build
+name: Build TensorFlow ESP32 Example
 
 on:
   push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout empty repo
         uses: actions/checkout@v4
 
       - name: Setup Arduino CLI
@@ -23,39 +23,24 @@ jobs:
             ~/Arduino
           key: ${{ runner.os }}-arduino-cache
 
-      - name: Update index
+      - name: Update Arduino index
         run: arduino-cli core update-index
 
       - name: Install ESP32 core
         run: arduino-cli core install esp32:esp32
 
-      - name: Install standard libraries
+      - name: Download TensorFlow ESP32 repo
         run: |
-          arduino-cli lib update-index
-          arduino-cli lib install ArduinoJson || true
-          arduino-cli lib install WiFi || true
+          git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git tf
 
-      - name: Install TensorFlow ESP32 library
-        run: |
-          mkdir -p libraries
-          git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git libraries/Arduino_TensorFlowLite_ESP32
-
-      - name: Detect sketch
-        id: sketch
-        run: |
-          SKETCH=$(ls *.ino | head -n 1)
-          echo "sketch=$SKETCH" >> $GITHUB_OUTPUT
-
-      - name: Compile sketch
+      - name: Compile micro_speech example
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:nodemcu-32s \
-            --libraries libraries \
-            --output-dir build \
-            ${{ steps.sketch.outputs.sketch }}
+          --fqbn esp32:esp32:nodemcu-32s \
+          tf/examples/micro_speech
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
-          name: esp32-firmware
-          path: build
+          name: esp32-micro-speech
+          path: tf/examples/micro_speech/build
