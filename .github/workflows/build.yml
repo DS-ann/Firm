@@ -30,9 +30,9 @@ jobs:
       - name: Update Arduino index
         run: arduino-cli core update-index
 
-      # 5️⃣ Install ESP32 core
+      # 5️⃣ Install ESP32 core (upgrade to 3.5.2 to fix huge_app bug)
       - name: Install ESP32 Core
-        run: arduino-cli core install esp32:esp32@3.3.7
+        run: arduino-cli core install esp32:esp32@3.5.2
 
       # 6️⃣ Install required libraries
       - name: Install Libraries
