@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout empty repo
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Arduino CLI
@@ -29,18 +29,18 @@ jobs:
       - name: Install ESP32 core
         run: arduino-cli core install esp32:esp32
 
-      - name: Download TensorFlow ESP32 repo
+      - name: Install TensorFlowLite ESP32
         run: |
-          git clone https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git tf
+          arduino-cli lib install --git-url https://github.com/tanakamasayuki/Arduino_TensorFlowLite_ESP32.git
 
       - name: Compile micro_speech example
         run: |
           arduino-cli compile \
           --fqbn esp32:esp32:nodemcu-32s \
-          tf/examples/micro_speech
+          ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32/examples/micro_speech
 
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: esp32-micro-speech
-          path: tf/examples/micro_speech/build
+          path: ~/Arduino/libraries/Arduino_TensorFlowLite_ESP32/examples/micro_speech/build
