@@ -9,79 +9,36 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------
+      # Checkout repository
+      # -------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # -------------------------
-      # Cache Arduino CLI installation & data
-      # -------------------------
-      - name: Cache Arduino CLI & data
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.arduino15
-            ~/.arduinoIDE
-          key: ${{ runner.os }}-arduino-cli-${{ hashFiles('**/*.ino') }}
-          restore-keys: |
-            ${{ runner.os }}-arduino-cli-
-
-      # -------------------------
-      # Install Arduino CLI if missing
+      # Install Arduino CLI
       # -------------------------
       - name: Install Arduino CLI
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
 
       # -------------------------
-      # Configure Arduino CLI safely
+      # Setup Arduino CLI
       # -------------------------
       - name: Setup Arduino CLI
         run: |
-          if [ ! -f ~/.arduino15/arduino-cli.yaml ]; then
-            arduino-cli config init
-          fi
+          arduino-cli config init
           arduino-cli core update-index
+          arduino-cli core install esp32:esp32
 
       # -------------------------
-      # Cache ESP32 core separately
-      # -------------------------
-      - name: Cache ESP32 core
-        uses: actions/cache@v3
-        with:
-          path: ~/.arduino15/packages/esp32
-          key: ${{ runner.os }}-esp32-core-${{ hashFiles('**/*.ino') }}
-          restore-keys: |
-            ${{ runner.os }}-esp32-core-
-
-      # -------------------------
-      # Install ESP32 core if not cached
-      # -------------------------
-      - name: Install ESP32 core
-        if: steps.cache.outputs.cache-hit != 'true'
-        run: |
-          arduino-cli core install esp32:esp32 || echo "ESP32 core already installed"
-
-      # -------------------------
-      # Cache libraries separately
-      # -------------------------
-      - name: Cache Arduino libraries
-        uses: actions/cache@v3
-        with:
-          path: ~/.arduino15/packages
-          key: ${{ runner.os }}-arduino-libs-${{ hashFiles('**/*.ino') }}
-          restore-keys: |
-            ${{ runner.os }}-arduino-libs-
-
-      # -------------------------
-      # Install required libraries if not cached
+      # Install required libraries
       # -------------------------
       - name: Install required libraries
-        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences"; do
-            arduino-cli lib install "$lib" || echo "$lib already installed"
+            arduino-cli lib install "$lib"
           done
 
       # -------------------------
