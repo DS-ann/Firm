@@ -5,61 +5,63 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 
-// ===== WiFi =====
-const char* ssidList[] = {"Lenovo","vivo Y15s","POCO5956","SSID_4"};
-const char* passwordList[] = {"debarghya","Debarghya1234","debarghya","PASS_4"};
-const int numNetworks = 4;
+/* ========= WIFI ========= */
 
-// ===== MQTT TLS =====
-const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
-const int mqttPort = 8883;
-const char* mqttUser = "Debarghya_Sannigrahi";
-const char* mqttPassword = "Dsann#5956";
-const char* mqttCommandTopic = "home/esp32/commands";
-const char* mqttStatusTopic = "home/esp32/status";
+const char* ssidList[]={"Lenovo","vivo Y15s","POCO5956","SSID_4"};
+const char* passwordList[]={"debarghya","Debarghya1234","debarghya","PASS_4"};
+const int numNetworks=4;
 
-// ===== Device ID =====
+/* ========= MQTT ========= */
+
+const char* mqttServer="5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
+const int mqttPort=8883;
+
+const char* mqttUser="Debarghya_Sannigrahi";
+const char* mqttPassword="Dsann#5956";
+
+const char* mqttCommandTopic="home/esp32/commands";
+const char* mqttStatusTopic="home/esp32/status";
+
+/* ========= DEVICE ID ========= */
+
 String getDeviceID(){
   String id="esp32_"+String((uint64_t)ESP.getEfuseMac(),HEX);
   id.toLowerCase();
   return id;
 }
 
-// ===== Relays =====
+/* ========= RELAYS ========= */
+
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS]={13,4,5,18,19,21,22,23};
 
 bool relayState[NUM_RELAYS];
-unsigned long relayTimers[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
-unsigned long relayUsageTotal[NUM_RELAYS];
-unsigned long relayUsageToday[NUM_RELAYS];
 unsigned long relayStartTime[NUM_RELAYS];
+unsigned long relayUsageTotal[NUM_RELAYS];
 
-// ===== Preferences =====
+/* ========= STORAGE ========= */
+
 Preferences preferences;
 
-// ===== Bluetooth =====
-BluetoothSerial SerialBT;
-TaskHandle_t VoiceTaskHandle;
+/* ========= BLUETOOTH ========= */
 
-// ===== WiFi Client & MQTT =====
+BluetoothSerial SerialBT;
+
+/* ========= MQTT CLIENT ========= */
+
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
-// ===== Voice Task =====
-void VoiceTask(void * pvParameters){
-  for(;;){
-    vTaskDelay(1000/portTICK_PERIOD_MS);
-  }
-}
+/* ========= WIFI CONNECT ========= */
 
-// ===== WiFi Connect =====
 void connectWiFi(){
 
+  Serial.println("----- WIFI START -----");
+
   WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  WiFi.persistent(false);
+  WiFi.disconnect(true);
+  delay(1000);
 
   for(int i=0;i<numNetworks;i++){
 
@@ -78,19 +80,32 @@ void connectWiFi(){
 
       Serial.println();
       Serial.println("WiFi Connected");
+
       Serial.print("IP: ");
       Serial.println(WiFi.localIP());
+
       Serial.print("RSSI: ");
       Serial.println(WiFi.RSSI());
 
+      Serial.print("Heap: ");
+      Serial.println(ESP.getFreeHeap());
+
+      Serial.println("----- WIFI OK -----");
+
       return;
     }
+
+    Serial.println("\nFailed. Trying next network.");
+
+    WiFi.disconnect(true);
+    delay(1000);
   }
 
-  Serial.println("Failed to connect to WiFi");
+  Serial.println("All WiFi networks failed.");
 }
 
-// ===== Preferences =====
+/* ========= STATE SAVE ========= */
+
 void saveState(){
 
   preferences.begin("relayState",false);
@@ -102,20 +117,18 @@ void saveState(){
     sprintf(key,"r%d",i);
     preferences.putBool(key,relayState[i]);
 
-    sprintf(key,"t%d",i);
-    preferences.putULong(key,relayEndTime[i]);
-
     sprintf(key,"u%d",i);
     preferences.putULong(key,relayUsageTotal[i]);
-
-    sprintf(key,"d%d",i);
-    preferences.putULong(key,relayUsageToday[i]);
   }
 
   preferences.end();
 }
 
+/* ========= STATE LOAD ========= */
+
 void loadState(){
+
+  Serial.println("Loading saved relay states...");
 
   preferences.begin("relayState",true);
 
@@ -126,28 +139,25 @@ void loadState(){
     sprintf(key,"r%d",i);
     relayState[i]=preferences.getBool(key,false);
 
-    sprintf(key,"t%d",i);
-    relayEndTime[i]=preferences.getULong(key,0UL);
-
     sprintf(key,"u%d",i);
-    relayUsageTotal[i]=preferences.getULong(key,0UL);
-
-    sprintf(key,"d%d",i);
-    relayUsageToday[i]=preferences.getULong(key,0UL);
+    relayUsageTotal[i]=preferences.getULong(key,0);
 
     pinMode(relayPins[i],OUTPUT);
     digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
 
-    relayTimers[i]=(relayEndTime[i]>millis())?relayEndTime[i]-millis():0;
+    Serial.printf("Relay %d state: %s\n",i,relayState[i]?"ON":"OFF");
   }
 
   preferences.end();
 }
 
-// ===== Relay Control =====
+/* ========= RELAY CONTROL ========= */
+
 void updateRelay(int id,bool state){
 
   if(id<0||id>=NUM_RELAYS) return;
+
+  Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 
   if(state && !relayState[id])
     relayStartTime[id]=millis();
@@ -168,53 +178,55 @@ void updateRelay(int id,bool state){
   doc["state"]=state;
 
   String out;
-
   serializeJson(doc,out);
 
   client.publish(mqttStatusTopic,out.c_str());
-
-  Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 }
 
-// ===== Timer =====
-void checkTimers(){
+/* ========= TIMER CHECK ========= */
 
-  static unsigned long lastCheck=0;
+void checkTimers(){
 
   unsigned long now=millis();
 
-  if(now-lastCheck>=1000){
+  for(int i=0;i<NUM_RELAYS;i++){
 
-    lastCheck=now;
+    if(relayEndTime[i]>0 && now>=relayEndTime[i]){
 
-    for(int i=0;i<NUM_RELAYS;i++){
+      Serial.printf("Timer expired for relay %d\n",i);
 
-      if(relayEndTime[i]>now)
-        relayTimers[i]=relayEndTime[i]-now;
+      relayEndTime[i]=0;
 
-      else if(relayTimers[i]>0){
-
-        relayTimers[i]=0;
-
-        updateRelay(i,false);
-      }
+      updateRelay(i,false);
     }
   }
 }
 
-// ===== MQTT Callback =====
-void mqttCallback(char* topic,byte* payload,unsigned int length){
+/* ========= MQTT CALLBACK ========= */
 
-  String msg="";
+void mqttCallback(char* topic, byte* payload, unsigned int length){
+
+  Serial.print("MQTT message topic: ");
+  Serial.println(topic);
+
+  String msg;
 
   for(unsigned int i=0;i<length;i++)
     msg+=(char)payload[i];
 
-  Serial.printf("MQTT message: %s\n",msg.c_str());
+  Serial.print("Payload: ");
+  Serial.println(msg);
 
-  DynamicJsonDocument doc(256);
+  DynamicJsonDocument doc(512);
 
-  deserializeJson(doc,msg);
+  DeserializationError err=deserializeJson(doc,msg);
+
+  if(err){
+
+    Serial.print("JSON Error: ");
+    Serial.println(err.c_str());
+    return;
+  }
 
   const char* type=doc["type"];
 
@@ -223,76 +235,116 @@ void mqttCallback(char* topic,byte* payload,unsigned int length){
   if(strcmp(type,"toggle")==0){
 
     bool state=doc["state"];
-
     updateRelay(id,state);
+  }
 
-  }else if(strcmp(type,"setTimer")==0){
+  else if(strcmp(type,"setTimer")==0){
 
     unsigned long sec=doc["seconds"];
 
-    relayTimers[id]=sec*1000;
+    Serial.printf("Setting timer relay %d = %lu sec\n",id,sec);
 
-    relayEndTime[id]=millis()+relayTimers[id];
+    relayEndTime[id]=millis()+sec*1000;
 
-    if(sec>0)
-      updateRelay(id,true);
-
-    saveState();
+    updateRelay(id,true);
   }
 }
 
-// ===== MQTT Connect =====
+/* ========= MQTT CONNECT ========= */
+
 bool connectMQTT(){
 
   String deviceID=getDeviceID();
 
-  Serial.println("Connecting MQTT...");
+  Serial.println("----- MQTT CONNECT -----");
+
+  espClient.stop();
+  delay(300);
 
   espClient.setInsecure();
-  espClient.setTimeout(15000);        // FIX
-  client.setSocketTimeout(15);        // FIX
-  client.setBufferSize(1024);         // FIX
+  espClient.setTimeout(15000);
 
   client.setServer(mqttServer,mqttPort);
   client.setCallback(mqttCallback);
 
+  client.setKeepAlive(60);
+  client.setSocketTimeout(20);
+  client.setBufferSize(1024);
+
+  IPAddress ip;
+
+  if(WiFi.hostByName(mqttServer,ip)){
+
+    Serial.print("DNS OK -> ");
+    Serial.println(ip);
+
+  }else{
+
+    Serial.println("DNS FAILED");
+  }
+
+  Serial.print("ClientID: ");
+  Serial.println(deviceID);
+
   if(client.connect(deviceID.c_str(),mqttUser,mqttPassword)){
 
-    Serial.println("MQTT Connected!");
+    Serial.println("MQTT Connected");
 
     client.subscribe(mqttCommandTopic);
 
-    DynamicJsonDocument doc(512);
-
-    doc["type"]="status";
-
-    JsonArray rel=doc.createNestedArray("relays");
-
-    for(int i=0;i<NUM_RELAYS;i++)
-      rel.add(relayState[i]);
-
-    String out;
-
-    serializeJson(doc,out);
-
-    client.publish(mqttStatusTopic,out.c_str());
+    Serial.println("Subscribed to command topic");
 
     return true;
   }
 
-  Serial.printf("MQTT Failed rc=%d\n",client.state());
+  Serial.print("MQTT Failed rc=");
+  Serial.println(client.state());
 
   return false;
 }
 
-// ===== Setup =====
+/* ========= NETWORK MANAGER ========= */
+
+void networkManager(){
+
+  static unsigned long lastCheck=0;
+
+  if(millis()-lastCheck<3000) return;
+
+  lastCheck=millis();
+
+  if(WiFi.status()!=WL_CONNECTED){
+
+    Serial.println("WiFi lost -> reconnect");
+
+    connectWiFi();
+    return;
+  }
+
+  if(!client.connected()){
+
+    Serial.println("MQTT lost -> reconnect");
+
+    connectMQTT();
+  }
+}
+
+/* ========= SETUP ========= */
+
 void setup(){
 
   Serial.begin(115200);
 
-  delay(1000);
+  Serial.println("\n===== ESP32 SMART HOME START =====");
 
-  Serial.println("Starting ESP32 SmartHome");
+  Serial.print("Chip Rev: ");
+  Serial.println(ESP.getChipRevision());
+
+  Serial.print("Flash: ");
+  Serial.println(ESP.getFlashChipSize());
+
+  Serial.print("Free Heap: ");
+  Serial.println(ESP.getFreeHeap());
 
   loadState();
 
@@ -300,60 +352,40 @@ void setup(){
 
   SerialBT.begin("ESP32_SmartHome");
 
-  xTaskCreatePinnedToCore(VoiceTask,"VoiceTask",4096,NULL,1,&VoiceTaskHandle,1);
+  Serial.println("Bluetooth ready");
 
-  delay(2000);   // FIX (important)
+  delay(2000);
 
-  while(!connectMQTT()){
-
-    Serial.println("Retry MQTT in 5s");
-
-    delay(5000);
-  }
+  connectMQTT();
 }
 
-// ===== Loop =====
+/* ========= LOOP ========= */
+
 void loop(){
 
-  if(WiFi.status()!=WL_CONNECTED){
-
-    Serial.println("WiFi reconnecting...");
-
-    connectWiFi();
-
-    delay(500);
-  }
-
-  if(!client.connected()){
-
-    Serial.println("MQTT reconnecting...");
-
-    while(!connectMQTT()){
-      delay(5000);
-    }
-  }
+  networkManager();
 
   client.loop();
+
+  checkTimers();
 
   if(SerialBT.available()){
 
     String cmd=SerialBT.readStringUntil('\n');
 
-    cmd.trim();
+    Serial.print("Bluetooth cmd: ");
+    Serial.println(cmd);
 
     int sep=cmd.indexOf(':');
 
     if(sep>0){
 
       int id=cmd.substring(0,sep).toInt();
-
       int state=cmd.substring(sep+1).toInt();
 
       updateRelay(id,state!=0);
     }
   }
 
-  checkTimers();
-
-  delay(50);
+  delay(20);
 }
