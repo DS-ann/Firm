@@ -12,8 +12,8 @@ BluetoothSerial SerialBT;
 
 // ===== WiFi Multi =====
 WiFiMulti wifiMulti;
-const char* ssidList[] = {"Lenovo","vivo Y15s","SSID_3","SSID_4"};
-const char* passwordList[] = {"debarghya","Debarghya1234","PASS_3","PASS_4"};
+const char* ssidList[] = {"Lenovo","vivo Y15s","POCO5956","SSID_4"};
+const char* passwordList[] = {"debarghya","Debarghya1234","debarghya","PASS_4"};
 const int numNetworks = 4;
 
 // ===== MQTT =====
@@ -34,7 +34,7 @@ unsigned long relayTimers[NUM_RELAYS];
 
 // ===== Preferences =====
 Preferences preferences;
-bool savePending = false; // flag to save state safely
+bool savePending = false;
 
 // ===== MQTT Client =====
 WiFiClientSecure espClient;
@@ -96,7 +96,7 @@ void updateRelay(int id,bool state){
   }
   relayState[id]=state;
   digitalWrite(relayPins[id],state?LOW:HIGH);
-  savePending = true; // schedule save safely
+  savePending = true;
   Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 }
 
@@ -118,7 +118,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
 bool connectMQTT(){
   String deviceID=getDeviceID();
   client.setCallback(mqttCallback);
-  client.setBufferSize(512); // reduce buffer to save RAM
+  client.setBufferSize(256);
   if(client.connect(deviceID.c_str(),mqttUser,mqttPassword)){
     Serial.println("MQTT Connected!");
     for(int i=0;i<NUM_RELAYS;i++){
@@ -134,7 +134,7 @@ bool connectMQTT(){
 
 // ===== Publish Status =====
 void publishStatus(){
-  DynamicJsonDocument doc(256); // smaller footprint
+  DynamicJsonDocument doc(128); // smaller footprint
   doc["type"]="status"; doc["heartbeat"]="alive";
 
   JsonObject wifi=doc.createNestedObject("wifi");
@@ -163,8 +163,45 @@ void dailyReset(){
   if(today!=lastResetDay){
     lastResetDay=today;
     for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i]=0;
-    savePending = true; // save after reset
+    savePending = true;
     Serial.println("Daily usage reset done!");
+  }
+}
+
+// ===== Bluetooth Task (Core 1) =====
+void bluetoothTask(void * parameter){
+  Serial.printf("Bluetooth Task running on core %d\n", xPortGetCoreID());
+  if(!SerialBT.begin("ESP32_SmartHome")){
+    Serial.println("Bluetooth failed to start!");
+  } else {
+    Serial.println("Bluetooth started as ESP32_SmartHome");
+  }
+
+  while(true){
+    if(SerialBT.available()){
+      String cmd=SerialBT.readStringUntil('\n');
+      cmd.trim(); cmd.toUpperCase();
+
+      if(cmd.startsWith("RELAY:")){
+        int sep1=cmd.indexOf(':',6);
+        if(sep1>0){
+          int id=cmd.substring(6,sep1).toInt()-1;
+          String s=cmd.substring(sep1+1);
+          if(s=="ON") updateRelay(id,true);
+          else if(s=="OFF") updateRelay(id,false);
+        }
+      } else if(cmd.startsWith("TIMER:")){
+        int sep1=cmd.indexOf(':',6);
+        if(sep1>0){
+          int id=cmd.substring(6,sep1).toInt()-1;
+          long sec=cmd.substring(sep1+1).toInt();
+          relayTimers[id]=sec*1000;
+          relayEndTime[id]=millis()+relayTimers[id];
+          updateRelay(id,true);
+        }
+      }
+    }
+    vTaskDelay(20 / portTICK_PERIOD_MS);
   }
 }
 
@@ -172,22 +209,30 @@ void dailyReset(){
 void setup(){
   Serial.begin(115200);
   delay(1000);
-  Serial.println("Starting ESP32 SmartHome with MQTT + Bluetooth + MultiWiFi...");
+  Serial.println("Starting ESP32 SmartHome...");
 
+  // Initialize relays
   for(int i=0;i<NUM_RELAYS;i++){
     relayState[i]=false;
     relayTimers[i]=0;
     relayEndTime[i]=0;
     relayUsageToday[i]=0;
     relayUsageTotal[i]=0;
+    pinMode(relayPins[i],OUTPUT);
+    digitalWrite(relayPins[i],HIGH);
   }
 
   loadState();
 
+  // Start Bluetooth on Core 1
+  xTaskCreatePinnedToCore(
+    bluetoothTask, "BT Task", 4096, NULL, 1, NULL, 1
+  );
+
+  // WiFi
   for(int i=0;i<numNetworks;i++){
     wifiMulti.addAP(ssidList[i], passwordList[i]);
   }
-
   Serial.println("Connecting to WiFi...");
   while(wifiMulti.run() != WL_CONNECTED){
     Serial.print(".");
@@ -195,17 +240,21 @@ void setup(){
   }
   Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
 
+  // Time
   configTime(gmtOffset_sec,daylightOffset_sec,ntpServer);
 
+  // MQTT
   espClient.setInsecure();
   client.setServer(mqttServer,mqttPort);
-  while(!connectMQTT()){Serial.println("Retry MQTT in 5s"); delay(5000);}
+  while(!connectMQTT()){
+    Serial.println("Retry MQTT in 5s");
+    delay(5000);
+  }
 
-  SerialBT.begin("ESP32_SmartHome");
-  Serial.println("Bluetooth started as ESP32_SmartHome");
+  Serial.println("Setup complete!");
 }
 
-// ===== Loop =====
+// ===== Loop (Core 0) =====
 void loop(){
   static unsigned long lastMQTTCheck = 0;
   static unsigned long lastStatus = 0;
@@ -216,7 +265,7 @@ void loop(){
 
   // WiFi Auto-reconnect
   if(WiFi.status()!=WL_CONNECTED && now-lastWiFiCheck>=5000){
-    Serial.println("WiFi disconnected, trying reconnect...");
+    Serial.println("WiFi disconnected, reconnecting...");
     wifiMulti.run();
     lastWiFiCheck = now;
   }
@@ -229,7 +278,7 @@ void loop(){
   }
   client.loop();
 
-  // Efficient relay timer check every 100ms
+  // Relay timers check every 100ms
   if(now-lastRelayCheck>=100){
     for(int i=0;i<NUM_RELAYS;i++){
       if(relayEndTime[i]>0 && relayEndTime[i]<=now && relayState[i]){
@@ -239,31 +288,7 @@ void loop(){
     lastRelayCheck = now;
   }
 
-  // Bluetooth commands
-  if(SerialBT.available()){
-    String cmd=SerialBT.readStringUntil('\n');
-    cmd.trim(); cmd.toUpperCase();
-    if(cmd.startsWith("RELAY:")){
-      int sep1=cmd.indexOf(':',6);
-      if(sep1>0){
-        int id=cmd.substring(6,sep1).toInt()-1;
-        String s=cmd.substring(sep1+1);
-        if(s=="ON") updateRelay(id,true);
-        else if(s=="OFF") updateRelay(id,false);
-      }
-    } else if(cmd.startsWith("TIMER:")){
-      int sep1=cmd.indexOf(':',6);
-      if(sep1>0){
-        int id=cmd.substring(6,sep1).toInt()-1;
-        long sec=cmd.substring(sep1+1).toInt();
-        relayTimers[id]=sec*1000;
-        relayEndTime[id]=now+relayTimers[id];
-        updateRelay(id,true);
-      }
-    }
-  }
-
-  // Publish status every second
+  // Publish status every 1s
   if(now-lastStatus>=1000){
     publishStatus();
     lastStatus=now;
@@ -272,14 +297,11 @@ void loop(){
   // Daily reset
   dailyReset();
 
-  // Periodic safe save (every 5s)
+  // Periodic safe save every 5s
   if(savePending && now-lastSaveCheck>5000){
     saveState();
     lastSaveCheck = now;
   }
-
-  // Heap debug
-  // Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
 
   delay(50);
 }
