@@ -18,7 +18,7 @@ const int numNetworks = 4;
 
 // ===== MQTT =====
 const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
-const int mqttPort = 8883;
+const int mqttPort = 8883; // TLS port
 const char* mqttUser = "Debarghya_Sannigrahi";
 const char* mqttPassword = "Dsann#5956";
 
@@ -30,10 +30,11 @@ unsigned long relayStartTime[NUM_RELAYS];
 unsigned long relayUsageToday[NUM_RELAYS];
 unsigned long relayUsageTotal[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
-unsigned long relayTimers[NUM_RELAYS]; // timer durations in ms
+unsigned long relayTimers[NUM_RELAYS];
 
 // ===== Preferences =====
 Preferences preferences;
+bool savePending = false; // flag to save state safely
 
 // ===== MQTT Client =====
 WiFiClientSecure espClient;
@@ -82,6 +83,7 @@ void saveState() {
     sprintf(key,"d%d",i); preferences.putULong(key,relayUsageToday[i]);
   }
   preferences.end();
+  savePending = false;
 }
 
 // ===== Relay Control =====
@@ -94,7 +96,7 @@ void updateRelay(int id,bool state){
   }
   relayState[id]=state;
   digitalWrite(relayPins[id],state?LOW:HIGH);
-  saveState();
+  savePending = true; // schedule save safely
   Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 }
 
@@ -116,6 +118,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
 bool connectMQTT(){
   String deviceID=getDeviceID();
   client.setCallback(mqttCallback);
+  client.setBufferSize(512); // reduce buffer to save RAM
   if(client.connect(deviceID.c_str(),mqttUser,mqttPassword)){
     Serial.println("MQTT Connected!");
     for(int i=0;i<NUM_RELAYS;i++){
@@ -131,7 +134,7 @@ bool connectMQTT(){
 
 // ===== Publish Status =====
 void publishStatus(){
-  DynamicJsonDocument doc(512); 
+  DynamicJsonDocument doc(256); // smaller footprint
   doc["type"]="status"; doc["heartbeat"]="alive";
 
   JsonObject wifi=doc.createNestedObject("wifi");
@@ -160,7 +163,7 @@ void dailyReset(){
   if(today!=lastResetDay){
     lastResetDay=today;
     for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i]=0;
-    saveState();
+    savePending = true; // save after reset
     Serial.println("Daily usage reset done!");
   }
 }
@@ -208,6 +211,7 @@ void loop(){
   static unsigned long lastStatus = 0;
   static unsigned long lastWiFiCheck = 0;
   static unsigned long lastRelayCheck = 0;
+  static unsigned long lastSaveCheck = 0;
   unsigned long now = millis();
 
   // WiFi Auto-reconnect
@@ -267,6 +271,15 @@ void loop(){
 
   // Daily reset
   dailyReset();
+
+  // Periodic safe save (every 5s)
+  if(savePending && now-lastSaveCheck>5000){
+    saveState();
+    lastSaveCheck = now;
+  }
+
+  // Heap debug
+  // Serial.printf("Free heap: %u\n", ESP.getFreeHeap());
 
   delay(50);
 }
