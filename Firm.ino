@@ -5,30 +5,30 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 
-Preferences preferences;
-BluetoothSerial SerialBT;
-
-WiFiClientSecure espClient;
-PubSubClient client(espClient);
-
-#define NUM_RELAYS 8
-int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
-bool relayState[NUM_RELAYS];
-
-// ===== WIFI LIST =====
-const char* ssidList[] = {"Lenovo","vivo Y15s","POCO5956"};
-const char* passwordList[] = {"debarghya","Debarghya1234","debarghya"};
-int numNetworks = 3;
+// ===== WIFI =====
+const char* ssidList[] = {"Lenovo","vivo Y15s","POCO5956","SSID_4"};
+const char* passwordList[] = {"debarghya","Debarghya1234","debarghya","PASS_4"};
+const int numNetworks = 4;
 
 // ===== MQTT =====
 const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
 const int mqttPort = 8883;
-
 const char* mqttUser = "Debarghya_Sannigrahi";
 const char* mqttPassword = "Dsann#5956";
 
-const char* commandTopic = "home/esp32/commands";
-const char* statusTopic = "home/esp32/status";
+const char* mqttCommandTopic = "home/esp32/commands";
+const char* mqttStatusTopic = "home/esp32/status";
+
+// ===== RELAYS =====
+#define NUM_RELAYS 8
+int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
+bool relayState[NUM_RELAYS];
+
+// ===== OBJECTS =====
+Preferences preferences;
+BluetoothSerial SerialBT;
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
 
 // ===== DEVICE ID =====
 String getDeviceID(){
@@ -37,14 +37,14 @@ String getDeviceID(){
   return id;
 }
 
+// ===== WIFI CONNECT =====
 void connectWiFi(){
 
   WiFi.mode(WIFI_STA);
 
   for(int i=0;i<numNetworks;i++){
 
-    Serial.println("Connecting to WiFi...");
-    Serial.println(ssidList[i]);
+    Serial.printf("Connecting to %s\n",ssidList[i]);
 
     WiFi.disconnect(true);
     delay(500);
@@ -59,14 +59,18 @@ void connectWiFi(){
     }
 
     if(WiFi.status()==WL_CONNECTED){
+
       Serial.println();
       Serial.println("WiFi Connected");
+      Serial.print("IP: ");
       Serial.println(WiFi.localIP());
+      Serial.print("RSSI: ");
+      Serial.println(WiFi.RSSI());
       return;
     }
   }
 
-  Serial.println("WiFi Failed");
+  Serial.println("WiFi connection failed");
 }
 
 // ===== RELAY CONTROL =====
@@ -85,14 +89,15 @@ void setRelay(int id,bool state){
   Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 }
 
-// ===== MQTT MESSAGE =====
+// ===== MQTT CALLBACK =====
 void mqttCallback(char* topic, byte* payload, unsigned int length){
 
-  String msg;
+  String msg="";
 
   for(int i=0;i<length;i++)
-  msg+=(char)payload[i];
+    msg+=(char)payload[i];
 
+  Serial.println("MQTT Message:");
   Serial.println(msg);
 
   DynamicJsonDocument doc(256);
@@ -100,7 +105,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
   DeserializationError err = deserializeJson(doc,msg);
 
   if(err){
-    Serial.println("JSON Error");
+    Serial.println("JSON Parse Failed");
     return;
   }
 
@@ -115,18 +120,19 @@ bool connectMQTT(){
 
   String deviceID=getDeviceID();
 
-  Serial.println("Connecting MQTT");
+  Serial.println("Connecting MQTT...");
 
   if(client.connect(deviceID.c_str(),mqttUser,mqttPassword)){
 
     Serial.println("MQTT Connected");
 
-    client.subscribe(commandTopic);
+    client.subscribe(mqttCommandTopic);
 
     return true;
   }
 
-  Serial.println("MQTT Failed");
+  Serial.print("MQTT Failed, rc=");
+  Serial.println(client.state());
 
   return false;
 }
@@ -135,16 +141,24 @@ bool connectMQTT(){
 void setup(){
 
   Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("ESP32 SmartHome Booting...");
 
   connectWiFi();
 
+  // TLS setup
   espClient.setInsecure();
 
+  // MQTT setup
   client.setServer(mqttServer,mqttPort);
   client.setCallback(mqttCallback);
+  client.setBufferSize(1024);
 
+  // Bluetooth
   SerialBT.begin("ESP32_SmartHome");
 
+  // Relay setup
   for(int i=0;i<NUM_RELAYS;i++){
 
     pinMode(relayPins[i],OUTPUT);
@@ -156,29 +170,38 @@ void setup(){
     digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
   }
 
+  // MQTT connect
   while(!connectMQTT()){
-    delay(3000);
+    Serial.println("Retrying MQTT in 5 seconds...");
+    delay(5000);
   }
 }
 
 // ===== LOOP =====
 void loop(){
 
-  if(WiFi.status()!=WL_CONNECTED)
-  connectWiFi();
+  if(WiFi.status()!=WL_CONNECTED){
+
+    Serial.println("WiFi lost. Reconnecting...");
+    connectWiFi();
+  }
 
   if(!client.connected()){
+
+    Serial.println("MQTT disconnected. Reconnecting...");
+
     while(!connectMQTT()){
-      delay(3000);
+      delay(5000);
     }
   }
 
   client.loop();
 
-  // Bluetooth control
+  // Bluetooth commands
   if(SerialBT.available()){
 
     String cmd = SerialBT.readStringUntil('\n');
+    cmd.trim();
 
     int sep = cmd.indexOf(':');
 
@@ -190,4 +213,6 @@ void loop(){
       setRelay(id,state);
     }
   }
+
+  delay(50);
 }
