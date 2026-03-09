@@ -10,8 +10,8 @@
 BluetoothSerial SerialBT;
 
 // ===== WiFi =====
-const char* ssidList[] = {"Lenovo","vivo Y15s","SSID_3","SSID_4"};
-const char* passwordList[] = {"debarghya","Debarghya1234","PASS_3","PASS_4"};
+const char* ssidList[] = {"Lenovo","SSID_2","SSID_3","SSID_4"};
+const char* passwordList[] = {"debarghya","PASS_2","PASS_3","PASS_4"};
 const int numNetworks = 4;
 
 // ===== MQTT =====
@@ -148,7 +148,7 @@ bool connectMQTT(){
 
 // ===== Publish Status =====
 void publishStatus(){
-  DynamicJsonDocument doc(1024);
+  DynamicJsonDocument doc(512); // reduced size for safety
   doc["type"]="status"; doc["heartbeat"]="alive";
 
   JsonObject wifi=doc.createNestedObject("wifi");
@@ -166,7 +166,7 @@ void publishStatus(){
 
   String out; serializeJson(doc,out);
   client.publish("home/esp32/status",out.c_str());
-  if(SerialBT.hasClient()) SerialBT.println(out);
+  if(SerialBT.hasClient()) SerialBT.println(out); // only send if connected
 }
 
 // ===== Daily Reset =====
@@ -187,6 +187,15 @@ void setup(){
   Serial.begin(115200);
   delay(1000);
   Serial.println("Starting ESP32 SmartHome with MQTT + Bluetooth + MultiWiFi...");
+
+  // Initialize arrays to prevent crash
+  for(int i=0;i<NUM_RELAYS;i++){
+    relayState[i]=false;
+    relayTimers[i]=0;
+    relayEndTime[i]=0;
+    relayUsageToday[i]=0;
+    relayUsageTotal[i]=0;
+  }
 
   loadState();
   connectWiFi();
