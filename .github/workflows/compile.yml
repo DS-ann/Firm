@@ -12,29 +12,55 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # -------------------------
+      # Cache Arduino CLI installation
+      # -------------------------
+      - name: Cache Arduino CLI and data
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.arduino15
+            ~/.arduinoIDE
+          key: ${{ runner.os }}-arduino-cli-${{ hashFiles('**/*.ino') }}
+          restore-keys: |
+            ${{ runner.os }}-arduino-cli-
+
+      # -------------------------
+      # Install Arduino CLI if missing
+      # -------------------------
       - name: Install Arduino CLI
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
 
-      - name: Setup Arduino
+      # -------------------------
+      # Configure Arduino CLI
+      # -------------------------
+      - name: Setup Arduino CLI
         run: |
           arduino-cli config init
           arduino-cli core update-index
 
+      # -------------------------
+      # Install ESP32 core (skipped if cached)
+      # -------------------------
       - name: Install ESP32 core
         run: |
-          arduino-cli core install esp32:esp32
+          arduino-cli core install esp32:esp32 || echo "Core already installed"
 
+      # -------------------------
+      # Install required libraries (skipped if cached)
+      # -------------------------
       - name: Install required libraries
         run: |
-          arduino-cli lib install "ArduinoJson"
-          arduino-cli lib install "ArduinoWebsockets"
-          arduino-cli lib install "WiFi"
-          arduino-cli lib install "Preferences"
-          arduino-cli lib install "BluetoothSerial"
-          arduino-cli lib install "PubSubClient"
+          for lib in "ArduinoJson" "ArduinoWebsockets" "WiFi" "Preferences" "BluetoothSerial" "PubSubClient"; do
+            arduino-cli lib install "$lib" || echo "$lib already installed"
+          done
 
+      # -------------------------
+      # Compile firmware
+      # -------------------------
       - name: Compile firmware
         run: |
           arduino-cli compile \
@@ -42,11 +68,17 @@ jobs:
             --output-dir build \
             .
 
+      # -------------------------
+      # Prepare flash files
+      # -------------------------
       - name: Prepare flash files
         run: |
           mkdir firmware
           cp build/*.bin firmware/
 
+      # -------------------------
+      # Upload firmware as artifact
+      # -------------------------
       - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
