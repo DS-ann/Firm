@@ -13,9 +13,9 @@ jobs:
         uses: actions/checkout@v4
 
       # -------------------------
-      # Cache Arduino CLI installation
+      # Cache Arduino CLI installation & data
       # -------------------------
-      - name: Cache Arduino CLI and data
+      - name: Cache Arduino CLI & data
         uses: actions/cache@v3
         with:
           path: |
@@ -35,26 +35,52 @@ jobs:
           sudo mv bin/arduino-cli /usr/local/bin/
 
       # -------------------------
-      # Configure Arduino CLI
+      # Configure Arduino CLI safely
       # -------------------------
       - name: Setup Arduino CLI
         run: |
-          arduino-cli config init
+          if [ ! -f ~/.arduino15/arduino-cli.yaml ]; then
+            arduino-cli config init
+          fi
           arduino-cli core update-index
 
       # -------------------------
-      # Install ESP32 core (skipped if cached)
+      # Cache ESP32 core separately
       # -------------------------
-      - name: Install ESP32 core
-        run: |
-          arduino-cli core install esp32:esp32 || echo "Core already installed"
+      - name: Cache ESP32 core
+        uses: actions/cache@v3
+        with:
+          path: ~/.arduino15/packages/esp32
+          key: ${{ runner.os }}-esp32-core-${{ hashFiles('**/*.ino') }}
+          restore-keys: |
+            ${{ runner.os }}-esp32-core-
 
       # -------------------------
-      # Install required libraries (skipped if cached)
+      # Install ESP32 core if not cached
+      # -------------------------
+      - name: Install ESP32 core
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          arduino-cli core install esp32:esp32 || echo "ESP32 core already installed"
+
+      # -------------------------
+      # Cache libraries separately
+      # -------------------------
+      - name: Cache Arduino libraries
+        uses: actions/cache@v3
+        with:
+          path: ~/.arduino15/packages
+          key: ${{ runner.os }}-arduino-libs-${{ hashFiles('**/*.ino') }}
+          restore-keys: |
+            ${{ runner.os }}-arduino-libs-
+
+      # -------------------------
+      # Install required libraries if not cached
       # -------------------------
       - name: Install required libraries
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
-          for lib in "ArduinoJson" "ArduinoWebsockets" "WiFi" "Preferences" "BluetoothSerial" "PubSubClient"; do
+          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences"; do
             arduino-cli lib install "$lib" || echo "$lib already installed"
           done
 
@@ -73,7 +99,7 @@ jobs:
       # -------------------------
       - name: Prepare flash files
         run: |
-          mkdir firmware
+          mkdir -p firmware
           cp build/*.bin firmware/
 
       # -------------------------
