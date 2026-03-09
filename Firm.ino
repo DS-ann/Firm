@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <Preferences.h>
@@ -9,7 +10,8 @@
 // ===== Bluetooth =====
 BluetoothSerial SerialBT;
 
-// ===== WiFi =====
+// ===== WiFi Multi =====
+WiFiMulti wifiMulti;
 const char* ssidList[] = {"Lenovo","vivo Y15s","SSID_3","SSID_4"};
 const char* passwordList[] = {"debarghya","Debarghya1234","PASS_3","PASS_4"};
 const int numNetworks = 4;
@@ -28,12 +30,12 @@ unsigned long relayStartTime[NUM_RELAYS];
 unsigned long relayUsageToday[NUM_RELAYS];
 unsigned long relayUsageTotal[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
-unsigned long relayTimers[NUM_RELAYS];
+unsigned long relayTimers[NUM_RELAYS]; // timer durations in ms
 
 // ===== Preferences =====
 Preferences preferences;
 
-// ===== MQTT =====
+// ===== MQTT Client =====
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
@@ -96,25 +98,6 @@ void updateRelay(int id,bool state){
   Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 }
 
-// ===== WiFi Connect =====
-void connectWiFi() {
-  Serial.println("Connecting to WiFi...");
-  for(int i=0;i<numNetworks;i++){
-    Serial.printf("Trying SSID: %s\n", ssidList[i]);
-    WiFi.begin(ssidList[i], passwordList[i]);
-    unsigned long start = millis();
-    while(WiFi.status() != WL_CONNECTED && millis() - start < 10000){
-      delay(500); Serial.print(".");
-    }
-    if(WiFi.status() == WL_CONNECTED){
-      Serial.printf("\nConnected to WiFi: %s\n", ssidList[i]);
-      return;
-    }
-    Serial.println();
-  }
-  Serial.println("Failed to connect to any WiFi");
-}
-
 // ===== MQTT Callback =====
 void mqttCallback(char* topic, byte* payload, unsigned int length){
   String msg="";
@@ -148,7 +131,7 @@ bool connectMQTT(){
 
 // ===== Publish Status =====
 void publishStatus(){
-  DynamicJsonDocument doc(512); // reduced size for stability
+  DynamicJsonDocument doc(512); 
   doc["type"]="status"; doc["heartbeat"]="alive";
 
   JsonObject wifi=doc.createNestedObject("wifi");
@@ -188,7 +171,6 @@ void setup(){
   delay(1000);
   Serial.println("Starting ESP32 SmartHome with MQTT + Bluetooth + MultiWiFi...");
 
-  // Safe initialization
   for(int i=0;i<NUM_RELAYS;i++){
     relayState[i]=false;
     relayTimers[i]=0;
@@ -198,32 +180,40 @@ void setup(){
   }
 
   loadState();
-  connectWiFi();
 
-  // NTP for daily reset
+  for(int i=0;i<numNetworks;i++){
+    wifiMulti.addAP(ssidList[i], passwordList[i]);
+  }
+
+  Serial.println("Connecting to WiFi...");
+  while(wifiMulti.run() != WL_CONNECTED){
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
+
   configTime(gmtOffset_sec,daylightOffset_sec,ntpServer);
 
-  // MQTT
   espClient.setInsecure();
   client.setServer(mqttServer,mqttPort);
   while(!connectMQTT()){Serial.println("Retry MQTT in 5s"); delay(5000);}
 
-  // Bluetooth
   SerialBT.begin("ESP32_SmartHome");
   Serial.println("Bluetooth started as ESP32_SmartHome");
 }
 
 // ===== Loop =====
 void loop(){
-  static unsigned long lastWiFiCheck = 0;
   static unsigned long lastMQTTCheck = 0;
   static unsigned long lastStatus = 0;
+  static unsigned long lastWiFiCheck = 0;
+  static unsigned long lastRelayCheck = 0;
   unsigned long now = millis();
 
   // WiFi Auto-reconnect
   if(WiFi.status()!=WL_CONNECTED && now-lastWiFiCheck>=5000){
-    Serial.println("WiFi disconnected, reconnecting...");
-    connectWiFi();
+    Serial.println("WiFi disconnected, trying reconnect...");
+    wifiMulti.run();
     lastWiFiCheck = now;
   }
 
@@ -235,11 +225,14 @@ void loop(){
   }
   client.loop();
 
-  // Relay timers
-  for(int i=0;i<NUM_RELAYS;i++){
-    if(relayEndTime[i]>0 && relayEndTime[i]<=now && relayState[i]){
-      updateRelay(i,false);
+  // Efficient relay timer check every 100ms
+  if(now-lastRelayCheck>=100){
+    for(int i=0;i<NUM_RELAYS;i++){
+      if(relayEndTime[i]>0 && relayEndTime[i]<=now && relayState[i]){
+        updateRelay(i,false);
+      }
     }
+    lastRelayCheck = now;
   }
 
   // Bluetooth commands
