@@ -24,7 +24,6 @@ const char* mqttStatusTopic = "home/esp32/status";
 const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
 
 bool relayState[NUM_RELAYS];
-unsigned long relayTimers[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
 unsigned long relayUsageTotal[NUM_RELAYS];
 unsigned long relayStartTime[NUM_RELAYS];
@@ -71,7 +70,8 @@ void connectWiFi(){
       Serial.println(WiFi.localIP());
       Serial.print("RSSI: ");
       Serial.println(WiFi.RSSI());
-      delay(2000);
+
+      delay(2000); // stabilize network
       return;
     }
   }
@@ -173,6 +173,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
   for(int i=0;i<length;i++)
     msg+=(char)payload[i];
 
+  Serial.println("MQTT message:");
   Serial.println(msg);
 
   DynamicJsonDocument doc(256);
@@ -180,7 +181,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
   DeserializationError err = deserializeJson(doc,msg);
 
   if(err){
-    Serial.println("JSON Error");
+    Serial.println("JSON parse failed");
     return;
   }
 
@@ -205,6 +206,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
 
 // ===== MQTT Connect =====
 bool connectMQTT(){
+
+  delay(1000);
 
   String deviceID=getDeviceID();
 
@@ -255,9 +258,19 @@ void setup(){
   client.setCallback(mqttCallback);
   client.setBufferSize(1024);
 
+  // TLS test
+  Serial.println("Testing TLS connection...");
+  if(espClient.connect(mqttServer,mqttPort)){
+    Serial.println("TLS OK");
+    espClient.stop();
+  }else{
+    Serial.println("TLS FAILED");
+  }
+
   SerialBT.begin("ESP32_SmartHome");
 
   while(!connectMQTT()){
+    Serial.println("Retry MQTT in 5 seconds...");
     delay(5000);
   }
 }
@@ -266,10 +279,13 @@ void setup(){
 void loop(){
 
   if(WiFi.status()!=WL_CONNECTED){
+    Serial.println("WiFi reconnecting...");
     connectWiFi();
   }
 
   if(!client.connected()){
+
+    Serial.println("MQTT reconnecting...");
 
     while(!connectMQTT()){
       delay(5000);
@@ -278,6 +294,7 @@ void loop(){
 
   client.loop();
 
+  // Bluetooth commands
   if(SerialBT.available()){
 
     String cmd=SerialBT.readStringUntil('\n');
