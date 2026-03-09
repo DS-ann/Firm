@@ -1,20 +1,18 @@
 #include <Arduino.h>
 
-// ===== Setup function =====
 void setup() {
-  // Initialize serial communication for debugging
   Serial.begin(115200);
   delay(1000);
   Serial.println("ESP32 blank sketch started");
+
+  // Set GPIO2 as output
+  pinMode(2, OUTPUT);
 }
 
-// ===== Main loop =====
 void loop() {
-  // Add your code here
-
-  // Example: blink the built-in LED
-  digitalWrite(LED_BUILTIN, HIGH);
+  // Blink GPIO2
+  digitalWrite(2, HIGH);
   delay(500);
-  digitalWrite(LED_BUILTIN, LOW);
+  digitalWrite(2, LOW);
   delay(500);
 }
