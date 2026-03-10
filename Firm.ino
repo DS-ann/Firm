@@ -39,6 +39,12 @@ unsigned long relayUsageTotal[NUM_RELAYS];
 unsigned long relayUsageToday[NUM_RELAYS];
 unsigned long relayStartTime[NUM_RELAYS];
 
+// ===== Bluetooth command variables =====
+volatile bool btCommandReceived=false;
+int btRelay=-1;
+int btState=0;
+int btTimer=0;
+
 // ===== Clients =====
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -64,16 +70,44 @@ void bluetoothTask(void *parameter){
 
 SerialBT.begin("RanjanaSmartHome");
 
+char buffer[64];
+
 while(true){
 
 if(SerialBT.available()){
 
-String cmd=SerialBT.readStringUntil('\n');
-Serial.println("BT:"+cmd);
+int len=SerialBT.readBytesUntil('\n',buffer,sizeof(buffer)-1);
+buffer[len]='\0';
+
+Serial.print("BT Command: ");
+Serial.println(buffer);
+
+int r=-1;
+int s=-1;
+int t=0;
+
+sscanf(buffer,"%d,%d,%d",&r,&s,&t);
+
+if(r>=0 && r<NUM_RELAYS){
+
+btRelay=r;
+btState=s;
+btTimer=t;
+
+btCommandReceived=true;
+
+SerialBT.println("OK");
+
+}else{
+
+SerialBT.println("Invalid");
 
 }
 
-vTaskDelay(100/portTICK_PERIOD_MS);
+}
+
+vTaskDelay(200/portTICK_PERIOD_MS);
+
 }
 }
 
@@ -121,6 +155,7 @@ String topic=String(mqttStatusTopic)+"/"+String(i);
 client.publish(topic.c_str(),payload.c_str());
 
 delay(20);
+
 }
 }
 
@@ -170,6 +205,7 @@ else if(relayEndTime[i]>now){
 relayTimers[i]=relayEndTime[i]-now;
 
 }
+
 }
 }
 
@@ -198,6 +234,7 @@ relayEndTime[relayID]=millis()+timerSec*1000;
 relayTimers[relayID]=timerSec*1000;
 
 }
+
 }
 }
 
@@ -221,6 +258,7 @@ client.publish(mqttWelcomeTopic,"Welcome to Ranjana's Smart Home");
 publishAllRelays();
 
 return true;
+
 }
 
 return false;
@@ -241,6 +279,7 @@ unsigned long start=millis();
 while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
 
 delay(500);
+
 }
 
 if(WiFi.status()==WL_CONNECTED){
@@ -249,6 +288,7 @@ Serial.println(WiFi.localIP());
 return;
 
 }
+
 }
 }
 
@@ -268,6 +308,7 @@ relayEndTime[i]=0;
 
 relayUsageTotal[i]=0;
 relayUsageToday[i]=0;
+
 }
 
 prefs.begin("relayState",false);
@@ -293,7 +334,7 @@ connectMQTT();
 xTaskCreatePinnedToCore(
 bluetoothTask,
 "BluetoothTask",
-4096,
+8192,
 NULL,
 1,
 NULL,
@@ -313,6 +354,7 @@ connectWiFi();
 lastWiFiCheck=millis();
 
 }
+
 }
 
 // MQTT reconnect
@@ -324,11 +366,28 @@ connectMQTT();
 lastMQTTCheck=millis();
 
 }
+
 }
 
 client.loop();
 
 checkTimers();
+
+// Bluetooth command execution
+if(btCommandReceived){
+
+setRelay(btRelay,btState);
+
+if(btTimer>0){
+
+relayEndTime[btRelay]=millis()+btTimer*1000;
+relayTimers[btRelay]=btTimer*1000;
+
+}
+
+btCommandReceived=false;
+
+}
 
 // publish one relay every 5 sec
 if(millis()-lastRelayPublish>=5000){
@@ -340,6 +399,7 @@ relayIndex++;
 if(relayIndex>=NUM_RELAYS) relayIndex=0;
 
 lastRelayPublish=millis();
+
 }
 
 // full status every 30 sec
@@ -348,6 +408,7 @@ if(millis()-lastFullPublish>=30000){
 publishAllRelays();
 
 lastFullPublish=millis();
+
 }
 
 // reset daily usage
@@ -360,7 +421,9 @@ if(timeinfo.tm_hour==0 && timeinfo.tm_min==0 && timeinfo.tm_sec<5){
 for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i]=0;
 
 }
+
 }
 
 delay(100);
+
 }
