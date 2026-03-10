@@ -255,7 +255,7 @@ bool connectMQTT(){
 String deviceID=getDeviceID();
 
 espClient.setInsecure();
-espClient.setBufferSizes(512,512);
+//espClient.setBufferSizes(512,512);
 
 client.setServer(mqttServer,mqttPort);
 client.setCallback(mqttCallback);
@@ -440,4 +440,5 @@ for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i]=0;
 delay(100);
 
 }
+
 
