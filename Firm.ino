@@ -8,6 +8,7 @@
 #include <time.h>
 #include <Preferences.h>
 #include <BluetoothSerial.h>
+#include "esp_bt.h"
 
 BluetoothSerial SerialBT;
 
@@ -84,7 +85,10 @@ int r=-1;
 int s=-1;
 int t=0;
 
-sscanf(buffer,"%d,%d,%d",&r,&s,&t);
+if(sscanf(buffer,"%d,%d,%d",&r,&s,&t)<2){
+SerialBT.println("Invalid");
+continue;
+}
 
 if(r>=0 && r<NUM_RELAYS){
 
@@ -123,7 +127,7 @@ doc["t"]=relayTimers[id]/1000;
 doc["ut"]=relayUsageTotal[id]/60000;
 doc["ud"]=relayUsageToday[id]/60000;
 
-char payload[128];
+char payload[192];
 
 serializeJson(doc,payload);
 
@@ -149,13 +153,14 @@ doc["t"]=relayTimers[i]/1000;
 doc["ut"]=relayUsageTotal[i]/60000;
 doc["ud"]=relayUsageToday[i]/60000;
 
-char payload[128];
+char payload[192];
 
 serializeJson(doc,payload);
 
-String topic=String(mqttStatusTopic)+"/"+String(i);
+char topic[64];
+sprintf(topic,"%s/%d",mqttStatusTopic,i);
 
-client.publish(topic.c_str(),payload);
+client.publish(topic,payload);
 
 delay(30);
 
@@ -183,8 +188,9 @@ relayState[id]=state;
 
 digitalWrite(relayPins[id],state?LOW:HIGH);
 
-String key="relay"+String(id);
-prefs.putBool(key.c_str(),state);
+char key[10];
+sprintf(key,"relay%d",id);
+prefs.putBool(key,state);
 
 publishRelay(id);
 
@@ -249,6 +255,7 @@ bool connectMQTT(){
 String deviceID=getDeviceID();
 
 espClient.setInsecure();
+espClient.setBufferSizes(512,512);
 
 client.setServer(mqttServer,mqttPort);
 client.setCallback(mqttCallback);
@@ -306,6 +313,8 @@ void setup(){
 
 Serial.begin(115200);
 
+esp_bt_controller_mem_release(ESP_BT_MODE_BLE);
+
 for(int i=0;i<NUM_RELAYS;i++){
 
 pinMode(relayPins[i],OUTPUT);
@@ -324,9 +333,10 @@ prefs.begin("relayState",false);
 
 for(int i=0;i<NUM_RELAYS;i++){
 
-String key="relay"+String(i);
+char key[10];
+sprintf(key,"relay%d",i);
 
-bool saved=prefs.getBool(key.c_str(),false);
+bool saved=prefs.getBool(key,false);
 
 relayState[i]=saved;
 
@@ -343,11 +353,11 @@ connectMQTT();
 xTaskCreatePinnedToCore(
 bluetoothTask,
 "BluetoothTask",
-8192,
+4096,
 NULL,
 1,
 NULL,
-0);
+1);
 
 }
 
@@ -376,7 +386,7 @@ lastMQTTCheck=millis();
 
 }
 
-client.loop();
+if(client.connected()) client.loop();
 
 checkTimers();
 
