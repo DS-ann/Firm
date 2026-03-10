@@ -37,7 +37,7 @@ jobs:
       # -------------------------
       - name: Install required libraries
         run: |
-          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences"; do
+          for lib in "AsyncMqttClient" "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences"; do
             arduino-cli lib install "$lib"
           done
 
