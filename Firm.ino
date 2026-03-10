@@ -77,10 +77,8 @@ while(true){
 if(SerialBT.available()){
 
 int len=SerialBT.readBytesUntil('\n',buffer,sizeof(buffer)-1);
-buffer[len]='\0';
 
-Serial.print("BT Command: ");
-Serial.println(buffer);
+if(len>0) buffer[len]='\0';
 
 int r=-1;
 int s=-1;
@@ -115,8 +113,9 @@ vTaskDelay(200/portTICK_PERIOD_MS);
 void publishRelay(int id){
 
 if(!client.connected()) return;
+if(WiFi.status()!=WL_CONNECTED) return;
 
-DynamicJsonDocument doc(128);
+StaticJsonDocument<128> doc;
 
 doc["r"]=id;
 doc["s"]=relayState[id]?1:0;
@@ -124,22 +123,25 @@ doc["t"]=relayTimers[id]/1000;
 doc["ut"]=relayUsageTotal[id]/60000;
 doc["ud"]=relayUsageToday[id]/60000;
 
-String payload;
+char payload[128];
+
 serializeJson(doc,payload);
 
-client.publish(mqttUpdateTopic,payload.c_str());
+client.publish(mqttUpdateTopic,payload);
 
 Serial.println(payload);
+
 }
 
-// ===== Publish full divided status =====
+// ===== Publish all relays =====
 void publishAllRelays(){
 
 if(!client.connected()) return;
+if(WiFi.status()!=WL_CONNECTED) return;
 
 for(int i=0;i<NUM_RELAYS;i++){
 
-DynamicJsonDocument doc(128);
+StaticJsonDocument<128> doc;
 
 doc["r"]=i;
 doc["s"]=relayState[i]?1:0;
@@ -147,16 +149,18 @@ doc["t"]=relayTimers[i]/1000;
 doc["ut"]=relayUsageTotal[i]/60000;
 doc["ud"]=relayUsageToday[i]/60000;
 
-String payload;
+char payload[128];
+
 serializeJson(doc,payload);
 
 String topic=String(mqttStatusTopic)+"/"+String(i);
 
-client.publish(topic.c_str(),payload.c_str());
+client.publish(topic.c_str(),payload);
 
-delay(20);
+delay(30);
 
 }
+
 }
 
 // ===== Relay control =====
@@ -183,6 +187,7 @@ String key="relay"+String(id);
 prefs.putBool(key.c_str(),state);
 
 publishRelay(id);
+
 }
 
 // ===== Timer check =====
@@ -207,18 +212,17 @@ relayTimers[i]=relayEndTime[i]-now;
 }
 
 }
+
 }
 
 // ===== MQTT callback =====
 void mqttCallback(char* topic,byte* payload,unsigned int length){
 
-String msg;
+StaticJsonDocument<256> doc;
 
-for(unsigned int i=0;i<length;i++) msg+=(char)payload[i];
+DeserializationError error=deserializeJson(doc,payload,length);
 
-DynamicJsonDocument doc(256);
-
-if(deserializeJson(doc,msg)) return;
+if(error) return;
 
 int relayID=doc["relay"];
 bool state=doc["state"];
@@ -236,6 +240,7 @@ relayTimers[relayID]=timerSec*1000;
 }
 
 }
+
 }
 
 // ===== MQTT connect =====
@@ -248,12 +253,14 @@ espClient.setInsecure();
 client.setServer(mqttServer,mqttPort);
 client.setCallback(mqttCallback);
 client.setBufferSize(1024);
+client.setKeepAlive(60);
+client.setSocketTimeout(30);
 
 if(client.connect(deviceID.c_str(),mqttUser,mqttPassword)){
 
 client.subscribe(mqttCommandTopic);
 
-client.publish(mqttWelcomeTopic,"Welcome to Ranjana's Smart Home");
+client.publish(mqttWelcomeTopic,"Welcome to Ranjana Smart Home",true);
 
 publishAllRelays();
 
@@ -262,6 +269,7 @@ return true;
 }
 
 return false;
+
 }
 
 // ===== WiFi connect =====
@@ -290,6 +298,7 @@ return;
 }
 
 }
+
 }
 
 // ===== Setup =====
@@ -345,7 +354,6 @@ NULL,
 // ===== Loop =====
 void loop(){
 
-// WiFi reconnect
 if(WiFi.status()!=WL_CONNECTED){
 
 if(millis()-lastWiFiCheck>10000){
@@ -357,7 +365,6 @@ lastWiFiCheck=millis();
 
 }
 
-// MQTT reconnect
 if(WiFi.status()==WL_CONNECTED && !client.connected()){
 
 if(millis()-lastMQTTCheck>5000){
@@ -373,7 +380,6 @@ client.loop();
 
 checkTimers();
 
-// Bluetooth command execution
 if(btCommandReceived){
 
 setRelay(btRelay,btState);
@@ -389,7 +395,6 @@ btCommandReceived=false;
 
 }
 
-// publish one relay every 5 sec
 if(millis()-lastRelayPublish>=5000){
 
 publishRelay(relayIndex);
@@ -402,7 +407,6 @@ lastRelayPublish=millis();
 
 }
 
-// full status every 30 sec
 if(millis()-lastFullPublish>=30000){
 
 publishAllRelays();
@@ -411,7 +415,6 @@ lastFullPublish=millis();
 
 }
 
-// reset daily usage
 struct tm timeinfo;
 
 if(getLocalTime(&timeinfo)){
