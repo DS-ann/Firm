@@ -20,13 +20,9 @@ const char* mqttStatusTopic = "home/esp32/status";
 // ===== Relays =====
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
-
 bool relayState[NUM_RELAYS];
-unsigned long relayStartTime[NUM_RELAYS];
-unsigned long relayUsageTotal[NUM_RELAYS];
 
 // ===== Objects =====
-Preferences preferences;
 BluetoothSerial SerialBT;
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
@@ -56,11 +52,11 @@ String getDeviceID(){
 // ===== WiFi Connect =====
 void connectWiFi(){
 
+  Serial.println("Connecting to Lenovo WiFi");
+
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(1000);
-
-  Serial.println("Connecting to Lenovo WiFi");
 
   WiFi.begin(ssid,password);
 
@@ -78,27 +74,32 @@ void connectWiFi(){
     Serial.print("IP: ");
     Serial.println(WiFi.localIP());
 
-    netState=NET_WIFI_CONNECTED;
+    netState = NET_WIFI_CONNECTED;
 
   }else{
 
     Serial.println("WiFi Failed");
-    netState=NET_DISCONNECTED;
+    netState = NET_DISCONNECTED;
   }
 }
 
 // ===== Broker Test =====
 bool brokerReachable(){
 
+  Serial.println("Checking broker...");
+
   WiFiClientSecure test;
+
   test.setInsecure();
   test.setTimeout(5000);
 
   if(test.connect(mqttServer,mqttPort)){
+    Serial.println("Broker reachable");
     test.stop();
     return true;
   }
 
+  Serial.println("Broker not reachable");
   return false;
 }
 
@@ -109,6 +110,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
 
   for(int i=0;i<length;i++)
     msg+=(char)payload[i];
+
+  Serial.println("MQTT message:");
+  Serial.println(msg);
 
   DynamicJsonDocument doc(512);
 
@@ -124,7 +128,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
     if(id>=0 && id<NUM_RELAYS){
 
       relayState[id]=state;
-
       digitalWrite(relayPins[id],state?LOW:HIGH);
 
       Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
@@ -137,7 +140,7 @@ bool connectMQTT(){
 
   String id=getDeviceID();
 
-  Serial.println("Connecting MQTT");
+  Serial.println("Connecting MQTT...");
 
   espClient.stop();
   delay(300);
@@ -161,7 +164,7 @@ bool connectMQTT(){
     return true;
   }
 
-  Serial.print("MQTT rc=");
+  Serial.print("MQTT failed rc=");
   Serial.println(client.state());
 
   return false;
@@ -174,8 +177,7 @@ void WiFiTask(void *p){
 
     if(WiFi.status()!=WL_CONNECTED){
 
-      Serial.println("WiFi reconnecting");
-
+      Serial.println("WiFi disconnected");
       connectWiFi();
     }
 
@@ -194,11 +196,9 @@ void MQTTTask(void *p){
 
       if(brokerReachable()){
 
-        Serial.println("Broker reachable");
-
-        netState=NET_BROKER_OK;
-
-      }else{
+        netState = NET_BROKER_OK;
+      }
+      else{
 
         vTaskDelay(3000/portTICK_PERIOD_MS);
         continue;
@@ -214,14 +214,12 @@ void MQTTTask(void *p){
           lastAttempt=millis();
 
           if(connectMQTT()){
-
-            netState=NET_MQTT_CONNECTED;
+            netState = NET_MQTT_CONNECTED;
           }
         }
 
       }else{
-
-        netState=NET_MQTT_CONNECTED;
+        netState = NET_MQTT_CONNECTED;
       }
     }
 
@@ -233,7 +231,8 @@ void MQTTTask(void *p){
 
       }else{
 
-        netState=NET_WIFI_CONNECTED;
+        Serial.println("MQTT lost");
+        netState = NET_WIFI_CONNECTED;
       }
     }
 
@@ -261,7 +260,6 @@ void DeviceTask(void *p){
         if(id>=0 && id<NUM_RELAYS){
 
           relayState[id]=state;
-
           digitalWrite(relayPins[id],state?LOW:HIGH);
         }
       }
@@ -276,10 +274,11 @@ void setup(){
 
   Serial.begin(115200);
 
+  Serial.println("System Starting...");
+
   WiFi.setSleep(false);
 
   for(int i=0;i<NUM_RELAYS;i++){
-
     pinMode(relayPins[i],OUTPUT);
     digitalWrite(relayPins[i],HIGH);
   }
