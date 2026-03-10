@@ -99,7 +99,7 @@ for(unsigned int i=0;i<length;i++) msg+=(char)payload[i];
 
 Serial.printf("MQTT message received: %s\n",msg.c_str());
 
-DynamicJsonDocument doc(256);
+DynamicJsonDocument doc(512);
 
 if(deserializeJson(doc,msg)){
 Serial.println("JSON parse error");
@@ -131,7 +131,7 @@ void publishAllRelays(){
 
 if(!client.connected()) return;
 
-DynamicJsonDocument doc(512);
+DynamicJsonDocument doc(1024);
 
 JsonArray arr=doc.to<JsonArray>();
 
@@ -163,7 +163,7 @@ String deviceID=getDeviceID();
 
 Serial.printf("Connecting MQTT ClientID: %s\n",deviceID.c_str());
 
-espClient.setInsecure();
+espClient.setBufferSizes(512,512);
 
 client.setServer(mqttServer,mqttPort);
 client.setCallback(mqttCallback);
@@ -344,3 +344,4 @@ for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i]=0;
 
 delay(100);
 }
+
