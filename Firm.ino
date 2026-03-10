@@ -1,247 +1,134 @@
 #include <WiFi.h>
-#include <Preferences.h>
 #include <BluetoothSerial.h>
-#include <PubSubClient.h>
-#include <WiFiClientSecure.h>
+#include <AsyncMqttClient.h>
 #include <ArduinoJson.h>
 
-// ===== WiFi =====
+// WIFI
 const char* ssid = "Lenovo";
 const char* password = "debarghya";
 
-// ===== MQTT =====
+// MQTT
 const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
 const int mqttPort = 8883;
 const char* mqttUser = "Debarghya_Sannigrahi";
-const char* mqttPassword = "Dsann#5956";
-const char* mqttCommandTopic = "home/esp32/commands";
-const char* mqttStatusTopic = "home/esp32/status";
+const char* mqttPass = "Dsann#5956";
 
-// ===== Relays =====
+const char* cmdTopic = "home/esp32/commands";
+const char* statusTopic = "home/esp32/status";
+
+// RELAYS
 #define NUM_RELAYS 8
-const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
+int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
 bool relayState[NUM_RELAYS];
 
-// ===== Objects =====
+// OBJECTS
 BluetoothSerial SerialBT;
-WiFiClientSecure espClient;
-PubSubClient client(espClient);
+AsyncMqttClient mqttClient;
+WiFiClientSecure secureClient;
 
-// ===== FreeRTOS =====
-TaskHandle_t WiFiTaskHandle;
-TaskHandle_t MQTTTaskHandle;
-TaskHandle_t DeviceTaskHandle;
+// TASK HANDLES
+TaskHandle_t wifiTaskHandle;
+TaskHandle_t deviceTaskHandle;
 
-// ===== Network State =====
-enum NetState {
-  NET_DISCONNECTED,
-  NET_WIFI_CONNECTED,
-  NET_BROKER_OK,
-  NET_MQTT_CONNECTED
-};
-
-volatile NetState netState = NET_DISCONNECTED;
-
-// ===== Device ID =====
+// DEVICE ID
 String getDeviceID(){
   String id="esp32_"+String((uint64_t)ESP.getEfuseMac(),HEX);
   id.toLowerCase();
   return id;
 }
 
-// ===== WiFi Connect =====
-void connectWiFi(){
+// RELAY CONTROL
+void setRelay(int id,bool state){
 
-  Serial.println("Connecting to Lenovo WiFi");
+  if(id<0 || id>=NUM_RELAYS) return;
 
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true);
-  delay(1000);
+  relayState[id]=state;
+  digitalWrite(relayPins[id],state?LOW:HIGH);
 
-  WiFi.begin(ssid,password);
+  Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 
-  unsigned long start=millis();
+  DynamicJsonDocument doc(256);
+  doc["relay"]=id;
+  doc["state"]=state;
 
-  while(WiFi.status()!=WL_CONNECTED && millis()-start<15000){
+  String out;
+  serializeJson(doc,out);
 
-    delay(500);
-    Serial.print(".");
-  }
-
-  if(WiFi.status()==WL_CONNECTED){
-
-    Serial.println("\nWiFi Connected");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-
-    netState = NET_WIFI_CONNECTED;
-
-  }else{
-
-    Serial.println("WiFi Failed");
-    netState = NET_DISCONNECTED;
-  }
+  mqttClient.publish(statusTopic,1,false,out.c_str());
 }
 
-// ===== Broker Test =====
-bool brokerReachable(){
-
-  Serial.println("Checking broker...");
-
-  WiFiClientSecure test;
-
-  test.setInsecure();
-  test.setTimeout(5000);
-
-  if(test.connect(mqttServer,mqttPort)){
-    Serial.println("Broker reachable");
-    test.stop();
-    return true;
-  }
-
-  Serial.println("Broker not reachable");
-  return false;
-}
-
-// ===== MQTT Callback =====
-void mqttCallback(char* topic, byte* payload, unsigned int length){
+// MQTT MESSAGE
+void onMqttMessage(char* topic,char* payload,
+                   AsyncMqttClientMessageProperties properties,
+                   size_t len,size_t index,size_t total){
 
   String msg="";
 
-  for(int i=0;i<length;i++)
-    msg+=(char)payload[i];
+  for(int i=0;i<len;i++)
+  msg+=payload[i];
 
   Serial.println("MQTT message:");
   Serial.println(msg);
 
-  DynamicJsonDocument doc(512);
+  DynamicJsonDocument doc(256);
 
   if(deserializeJson(doc,msg)) return;
 
-  const char* type=doc["type"];
+  int id=doc["relay"];
+  bool state=doc["state"];
 
-  if(strcmp(type,"toggle")==0){
+  setRelay(id,state);
+}
 
-    int id=doc["relay"];
-    bool state=doc["state"];
+// MQTT CONNECT
+void onMqttConnect(bool sessionPresent){
 
-    if(id>=0 && id<NUM_RELAYS){
+  Serial.println("MQTT Connected");
 
-      relayState[id]=state;
-      digitalWrite(relayPins[id],state?LOW:HIGH);
+  mqttClient.subscribe(cmdTopic,1);
+}
 
-      Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
-    }
+// WIFI CONNECT
+void connectWiFi(){
+
+  Serial.println("Connecting WiFi");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid,password);
+}
+
+// WIFI EVENTS
+void WiFiEvent(WiFiEvent_t event){
+
+  switch(event){
+
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+
+      mqttClient.connect();
+
+    break;
+
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+
+      Serial.println("WiFi lost");
+
+      mqttClient.disconnect();
+
+      delay(2000);
+
+      WiFi.begin(ssid,password);
+
+    break;
+
+    default: break;
   }
 }
 
-// ===== MQTT Connect =====
-bool connectMQTT(){
-
-  String id=getDeviceID();
-
-  Serial.println("Connecting MQTT...");
-
-  espClient.stop();
-  delay(300);
-
-  espClient.setInsecure();
-  espClient.setTimeout(15000);
-
-  client.setServer(mqttServer,mqttPort);
-  client.setCallback(mqttCallback);
-
-  client.setBufferSize(4096);
-  client.setKeepAlive(90);
-  client.setSocketTimeout(30);
-
-  if(client.connect(id.c_str(),mqttUser,mqttPassword)){
-
-    Serial.println("MQTT Connected");
-
-    client.subscribe(mqttCommandTopic);
-
-    return true;
-  }
-
-  Serial.print("MQTT failed rc=");
-  Serial.println(client.state());
-
-  return false;
-}
-
-// ===== WiFi Task =====
-void WiFiTask(void *p){
-
-  for(;;){
-
-    if(WiFi.status()!=WL_CONNECTED){
-
-      Serial.println("WiFi disconnected");
-      connectWiFi();
-    }
-
-    vTaskDelay(5000/portTICK_PERIOD_MS);
-  }
-}
-
-// ===== MQTT Task =====
-void MQTTTask(void *p){
-
-  unsigned long lastAttempt=0;
-
-  for(;;){
-
-    if(netState==NET_WIFI_CONNECTED){
-
-      if(brokerReachable()){
-
-        netState = NET_BROKER_OK;
-      }
-      else{
-
-        vTaskDelay(3000/portTICK_PERIOD_MS);
-        continue;
-      }
-    }
-
-    if(netState==NET_BROKER_OK){
-
-      if(!client.connected()){
-
-        if(millis()-lastAttempt>5000){
-
-          lastAttempt=millis();
-
-          if(connectMQTT()){
-            netState = NET_MQTT_CONNECTED;
-          }
-        }
-
-      }else{
-        netState = NET_MQTT_CONNECTED;
-      }
-    }
-
-    if(netState==NET_MQTT_CONNECTED){
-
-      if(client.connected()){
-
-        client.loop();
-
-      }else{
-
-        Serial.println("MQTT lost");
-        netState = NET_WIFI_CONNECTED;
-      }
-    }
-
-    vTaskDelay(50/portTICK_PERIOD_MS);
-  }
-}
-
-// ===== Device Task =====
-void DeviceTask(void *p){
+// BLUETOOTH CONTROL
+void deviceTask(void *p){
 
   for(;;){
 
@@ -257,11 +144,7 @@ void DeviceTask(void *p){
         int id=cmd.substring(0,sep).toInt();
         int state=cmd.substring(sep+1).toInt();
 
-        if(id>=0 && id<NUM_RELAYS){
-
-          relayState[id]=state;
-          digitalWrite(relayPins[id],state?LOW:HIGH);
-        }
+        setRelay(id,state);
       }
     }
 
@@ -269,32 +152,43 @@ void DeviceTask(void *p){
   }
 }
 
-// ===== Setup =====
+// SETUP
 void setup(){
 
   Serial.begin(115200);
 
-  Serial.println("System Starting...");
-
-  WiFi.setSleep(false);
+  Serial.println("ESP32 Smart Home Starting");
 
   for(int i=0;i<NUM_RELAYS;i++){
+
     pinMode(relayPins[i],OUTPUT);
     digitalWrite(relayPins[i],HIGH);
   }
 
-  connectWiFi();
-
   SerialBT.begin("ESP32_SmartHome");
 
-  client.setBufferSize(4096);
+  WiFi.onEvent(WiFiEvent);
 
-  xTaskCreatePinnedToCore(WiFiTask,"WiFiTask",4096,NULL,1,&WiFiTaskHandle,0);
-  xTaskCreatePinnedToCore(MQTTTask,"MQTTTask",8192,NULL,1,&MQTTTaskHandle,1);
-  xTaskCreatePinnedToCore(DeviceTask,"DeviceTask",4096,NULL,1,&DeviceTaskHandle,1);
+  secureClient.setInsecure();
+
+  mqttClient.setServer(mqttServer,mqttPort);
+  mqttClient.setCredentials(mqttUser,mqttPass);
+
+  mqttClient.onConnect(onMqttConnect);
+  mqttClient.onMessage(onMqttMessage);
+
+  connectWiFi();
+
+  xTaskCreatePinnedToCore(
+    deviceTask,
+    "deviceTask",
+    4096,
+    NULL,
+    1,
+    &deviceTaskHandle,
+    1
+  );
 }
 
 void loop(){
-
-  vTaskDelay(1000);
 }
