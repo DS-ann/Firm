@@ -6,11 +6,10 @@
 #include <ArduinoJson.h>
 
 // ===== WiFi =====
-const char* ssidList[] = {"Lenovo","vivo Y15s","POCO5956","SSID_4"};
-const char* passwordList[] = {"debarghya","Debarghya1234","debarghya","PASS_4"};
-const int numNetworks = 4;
+const char* ssid = "Lenovo";
+const char* password = "debarghya";
 
-// ===== MQTT TLS =====
+// ===== MQTT =====
 const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
 const int mqttPort = 8883;
 const char* mqttUser = "Debarghya_Sannigrahi";
@@ -18,45 +17,40 @@ const char* mqttPassword = "Dsann#5956";
 const char* mqttCommandTopic = "home/esp32/commands";
 const char* mqttStatusTopic = "home/esp32/status";
 
-// ===== Device ID =====
-String getDeviceID() {
-  String id = "esp32_" + String((uint64_t)ESP.getEfuseMac(), HEX);
-  id.toLowerCase();
-  return id;
-}
-
 // ===== Relays =====
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
 
 bool relayState[NUM_RELAYS];
-unsigned long relayTimers[NUM_RELAYS];
-unsigned long relayEndTime[NUM_RELAYS];
-unsigned long relayUsageTotal[NUM_RELAYS];
-unsigned long relayUsageToday[NUM_RELAYS];
 unsigned long relayStartTime[NUM_RELAYS];
+unsigned long relayUsageTotal[NUM_RELAYS];
 
-// ===== Preferences =====
+// ===== Objects =====
 Preferences preferences;
-
-// ===== Bluetooth =====
 BluetoothSerial SerialBT;
-
-// ===== MQTT =====
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 
-// ===== FreeRTOS Tasks =====
+// ===== FreeRTOS =====
 TaskHandle_t WiFiTaskHandle;
 TaskHandle_t MQTTTaskHandle;
 TaskHandle_t DeviceTaskHandle;
-TaskHandle_t VoiceTaskHandle;
 
-// ===== Voice Task =====
-void VoiceTask(void * pvParameters){
-  for(;;){
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-  }
+// ===== Network State =====
+enum NetState {
+  NET_DISCONNECTED,
+  NET_WIFI_CONNECTED,
+  NET_BROKER_OK,
+  NET_MQTT_CONNECTED
+};
+
+volatile NetState netState = NET_DISCONNECTED;
+
+// ===== Device ID =====
+String getDeviceID(){
+  String id="esp32_"+String((uint64_t)ESP.getEfuseMac(),HEX);
+  id.toLowerCase();
+  return id;
 }
 
 // ===== WiFi Connect =====
@@ -66,120 +60,46 @@ void connectWiFi(){
   WiFi.disconnect(true);
   delay(1000);
 
-  for(int i=0;i<numNetworks;i++){
+  Serial.println("Connecting to Lenovo WiFi");
 
-    Serial.printf("Connecting to WiFi: %s\n", ssidList[i]);
+  WiFi.begin(ssid,password);
 
-    WiFi.begin(ssidList[i],passwordList[i]);
+  unsigned long start=millis();
 
-    unsigned long startAttempt = millis();
+  while(WiFi.status()!=WL_CONNECTED && millis()-start<15000){
 
-    while(WiFi.status()!=WL_CONNECTED &&
-          millis()-startAttempt<10000){
-
-      vTaskDelay(500 / portTICK_PERIOD_MS);
-      Serial.print(".");
-    }
-
-    if(WiFi.status()==WL_CONNECTED){
-
-      Serial.println();
-      Serial.println("WiFi Connected");
-
-      Serial.print("IP: ");
-      Serial.println(WiFi.localIP());
-
-      Serial.print("RSSI: ");
-      Serial.println(WiFi.RSSI());
-
-      return;
-    }
-
-    Serial.println("\nTrying next network...");
+    delay(500);
+    Serial.print(".");
   }
 
-  Serial.println("WiFi Failed");
+  if(WiFi.status()==WL_CONNECTED){
+
+    Serial.println("\nWiFi Connected");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+
+    netState=NET_WIFI_CONNECTED;
+
+  }else{
+
+    Serial.println("WiFi Failed");
+    netState=NET_DISCONNECTED;
+  }
 }
 
-// ===== Preferences =====
-void saveState(){
+// ===== Broker Test =====
+bool brokerReachable(){
 
-  preferences.begin("relayState", false);
+  WiFiClientSecure test;
+  test.setInsecure();
+  test.setTimeout(5000);
 
-  char key[6];
-
-  for(int i=0;i<NUM_RELAYS;i++){
-
-    sprintf(key,"r%d",i); preferences.putBool(key, relayState[i]);
-    sprintf(key,"t%d",i); preferences.putULong(key, relayEndTime[i]);
-    sprintf(key,"u%d",i); preferences.putULong(key, relayUsageTotal[i]);
-    sprintf(key,"d%d",i); preferences.putULong(key, relayUsageToday[i]);
+  if(test.connect(mqttServer,mqttPort)){
+    test.stop();
+    return true;
   }
 
-  preferences.end();
-}
-
-void loadState(){
-
-  preferences.begin("relayState", true);
-
-  char key[6];
-
-  for(int i=0;i<NUM_RELAYS;i++){
-
-    sprintf(key,"r%d",i);
-    relayState[i] = preferences.getBool(key,false);
-
-    sprintf(key,"t%d",i);
-    relayEndTime[i] = preferences.getULong(key,0);
-
-    sprintf(key,"u%d",i);
-    relayUsageTotal[i] = preferences.getULong(key,0);
-
-    sprintf(key,"d%d",i);
-    relayUsageToday[i] = preferences.getULong(key,0);
-
-    pinMode(relayPins[i],OUTPUT);
-
-    digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
-
-  }
-
-  preferences.end();
-}
-
-// ===== Relay Control =====
-void updateRelay(int id, bool state){
-
-  if(id<0 || id>=NUM_RELAYS) return;
-
-  if(state && !relayState[id])
-    relayStartTime[id] = millis();
-
-  if(!state && relayState[id])
-    relayUsageTotal[id] += millis() - relayStartTime[id];
-
-  relayState[id] = state;
-
-  digitalWrite(relayPins[id], state?LOW:HIGH);
-
-  saveState();
-
-  if(client.connected()){
-
-    DynamicJsonDocument doc(256);
-
-    doc["type"]="relay";
-    doc["id"]=id;
-    doc["state"]=state;
-
-    String out;
-    serializeJson(doc,out);
-
-    client.publish(mqttStatusTopic,out.c_str());
-  }
-
-  Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
+  return false;
 }
 
 // ===== MQTT Callback =====
@@ -187,48 +107,52 @@ void mqttCallback(char* topic, byte* payload, unsigned int length){
 
   String msg="";
 
-  for(unsigned int i=0;i<length;i++)
+  for(int i=0;i<length;i++)
     msg+=(char)payload[i];
-
-  Serial.println(msg);
 
   DynamicJsonDocument doc(512);
 
   if(deserializeJson(doc,msg)) return;
 
-  const char* type = doc["type"];
-
-  int id = doc["relay"];
+  const char* type=doc["type"];
 
   if(strcmp(type,"toggle")==0){
 
-    bool state = doc["state"];
+    int id=doc["relay"];
+    bool state=doc["state"];
 
-    updateRelay(id,state);
+    if(id>=0 && id<NUM_RELAYS){
+
+      relayState[id]=state;
+
+      digitalWrite(relayPins[id],state?LOW:HIGH);
+
+      Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
+    }
   }
 }
 
 // ===== MQTT Connect =====
 bool connectMQTT(){
 
-  String deviceID = getDeviceID();
+  String id=getDeviceID();
 
-  Serial.println("Connecting MQTT...");
+  Serial.println("Connecting MQTT");
 
   espClient.stop();
-  delay(200);
+  delay(300);
 
   espClient.setInsecure();
   espClient.setTimeout(15000);
 
-  client.setServer(mqttServer, mqttPort);
+  client.setServer(mqttServer,mqttPort);
   client.setCallback(mqttCallback);
 
-  client.setBufferSize(2048);
-  client.setKeepAlive(60);
-  client.setSocketTimeout(20);
+  client.setBufferSize(4096);
+  client.setKeepAlive(90);
+  client.setSocketTimeout(30);
 
-  if(client.connect(deviceID.c_str(), mqttUser, mqttPassword)){
+  if(client.connect(id.c_str(),mqttUser,mqttPassword)){
 
     Serial.println("MQTT Connected");
 
@@ -237,69 +161,113 @@ bool connectMQTT(){
     return true;
   }
 
-  Serial.print("MQTT failed rc=");
+  Serial.print("MQTT rc=");
   Serial.println(client.state());
 
   return false;
 }
 
 // ===== WiFi Task =====
-void WiFiTask(void * parameter){
+void WiFiTask(void *p){
 
   for(;;){
 
     if(WiFi.status()!=WL_CONNECTED){
 
-      Serial.println("WiFi lost");
+      Serial.println("WiFi reconnecting");
 
       connectWiFi();
     }
 
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
+    vTaskDelay(5000/portTICK_PERIOD_MS);
   }
 }
 
 // ===== MQTT Task =====
-void MQTTTask(void * parameter){
+void MQTTTask(void *p){
+
+  unsigned long lastAttempt=0;
 
   for(;;){
 
-    if(WiFi.status()==WL_CONNECTED){
+    if(netState==NET_WIFI_CONNECTED){
+
+      if(brokerReachable()){
+
+        Serial.println("Broker reachable");
+
+        netState=NET_BROKER_OK;
+
+      }else{
+
+        vTaskDelay(3000/portTICK_PERIOD_MS);
+        continue;
+      }
+    }
+
+    if(netState==NET_BROKER_OK){
 
       if(!client.connected()){
 
-        connectMQTT();
-      }
+        if(millis()-lastAttempt>5000){
 
-      client.loop();
+          lastAttempt=millis();
+
+          if(connectMQTT()){
+
+            netState=NET_MQTT_CONNECTED;
+          }
+        }
+
+      }else{
+
+        netState=NET_MQTT_CONNECTED;
+      }
     }
 
-    vTaskDelay(50 / portTICK_PERIOD_MS);
+    if(netState==NET_MQTT_CONNECTED){
+
+      if(client.connected()){
+
+        client.loop();
+
+      }else{
+
+        netState=NET_WIFI_CONNECTED;
+      }
+    }
+
+    vTaskDelay(50/portTICK_PERIOD_MS);
   }
 }
 
 // ===== Device Task =====
-void DeviceTask(void * parameter){
+void DeviceTask(void *p){
 
   for(;;){
 
     if(SerialBT.available()){
 
-      String cmd = SerialBT.readStringUntil('\n');
+      String cmd=SerialBT.readStringUntil('\n');
       cmd.trim();
 
-      int sep = cmd.indexOf(':');
+      int sep=cmd.indexOf(':');
 
       if(sep>0){
 
-        int id = cmd.substring(0,sep).toInt();
-        int state = cmd.substring(sep+1).toInt();
+        int id=cmd.substring(0,sep).toInt();
+        int state=cmd.substring(sep+1).toInt();
 
-        updateRelay(id,state);
+        if(id>=0 && id<NUM_RELAYS){
+
+          relayState[id]=state;
+
+          digitalWrite(relayPins[id],state?LOW:HIGH);
+        }
       }
     }
 
-    vTaskDelay(20 / portTICK_PERIOD_MS);
+    vTaskDelay(20/portTICK_PERIOD_MS);
   }
 }
 
@@ -308,26 +276,26 @@ void setup(){
 
   Serial.begin(115200);
 
-  loadState();
+  WiFi.setSleep(false);
+
+  for(int i=0;i<NUM_RELAYS;i++){
+
+    pinMode(relayPins[i],OUTPUT);
+    digitalWrite(relayPins[i],HIGH);
+  }
 
   connectWiFi();
 
   SerialBT.begin("ESP32_SmartHome");
 
-  // TLS warm-up
-  espClient.setInsecure();
-  if(espClient.connect(mqttServer,mqttPort)){
-    Serial.println("TLS OK");
-    espClient.stop();
-  }
+  client.setBufferSize(4096);
 
-  // Tasks
   xTaskCreatePinnedToCore(WiFiTask,"WiFiTask",4096,NULL,1,&WiFiTaskHandle,0);
   xTaskCreatePinnedToCore(MQTTTask,"MQTTTask",8192,NULL,1,&MQTTTaskHandle,1);
   xTaskCreatePinnedToCore(DeviceTask,"DeviceTask",4096,NULL,1,&DeviceTaskHandle,1);
-  xTaskCreatePinnedToCore(VoiceTask,"VoiceTask",4096,NULL,1,&VoiceTaskHandle,1);
 }
 
 void loop(){
+
   vTaskDelay(1000);
 }
