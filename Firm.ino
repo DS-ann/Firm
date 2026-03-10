@@ -1,4 +1,5 @@
 #include <WiFi.h>
+#define MQTT_MAX_PACKET_SIZE 1024
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -18,6 +19,7 @@ const char* mqttPassword="Dsann#5956";
 
 const char* mqttCommandTopic="home/esp32/commands";
 const char* mqttStatusTopic="home/esp32/status";
+const char* mqttUpdateTopic="home/esp32/update";
 const char* mqttWelcomeTopic="home/esp32/welcome";
 
 // ===== Relays =====
@@ -44,23 +46,45 @@ id.toLowerCase();
 return id;
 }
 
-// ===== Publish status =====
+// ===== Publish single relay =====
+void publishRelay(int id){
+
+if(!client.connected()) return;
+
+DynamicJsonDocument doc(128);
+
+doc["r"]=id;
+doc["s"]=relayState[id]?1:0;
+doc["t"]=relayTimers[id]/1000;
+doc["ut"]=relayUsageTotal[id]/60000;
+doc["ud"]=relayUsageToday[id]/60000;
+
+String payload;
+serializeJson(doc,payload);
+
+client.publish(mqttUpdateTopic,payload.c_str());
+
+Serial.print("Relay update: ");
+Serial.println(payload);
+}
+
+// ===== Publish all relays (compressed) =====
 void publishAllRelays(){
 
 if(!client.connected()) return;
 
-DynamicJsonDocument doc(1024);
+DynamicJsonDocument doc(512);
 JsonArray arr=doc.to<JsonArray>();
 
 for(int i=0;i<NUM_RELAYS;i++){
 
 JsonObject r=arr.createNestedObject();
 
-r["relay"]=i;
-r["state"]=relayState[i]?1:0;
-r["timer_sec"]=relayTimers[i]/1000;
-r["usage_total_min"]=relayUsageTotal[i]/60000;
-r["usage_today_min"]=relayUsageToday[i]/60000;
+r["r"]=i;
+r["s"]=relayState[i]?1:0;
+r["t"]=relayTimers[i]/1000;
+r["ut"]=relayUsageTotal[i]/60000;
+r["ud"]=relayUsageToday[i]/60000;
 
 }
 
@@ -69,6 +93,7 @@ serializeJson(doc,payload);
 
 client.publish(mqttStatusTopic,payload.c_str());
 
+Serial.print("Full status: ");
 Serial.println(payload);
 }
 
@@ -94,7 +119,7 @@ prefs.putBool(key.c_str(),state);
 
 Serial.printf("Relay %d -> %s\n",id,state?"ON":"OFF");
 
-publishAllRelays();   // instant publish
+publishRelay(id);   // instant small update
 }
 
 // ===== Timer check =====
@@ -151,7 +176,6 @@ relayTimers[relayID]=timerSec*1000;
 }
 
 }
-
 }
 
 // ===== MQTT connect =====
@@ -172,7 +196,7 @@ Serial.println("MQTT Connected");
 
 client.subscribe(mqttCommandTopic);
 
-// Welcome message
+// welcome message
 client.publish(mqttWelcomeTopic,"Welcome to Ranjana's Smart Home");
 
 publishAllRelays();
@@ -269,7 +293,6 @@ configTime(19800,0,"pool.ntp.org","time.nist.gov");
 
 // MQTT
 while(!connectMQTT()){
-
 delay(5000);
 }
 
@@ -292,13 +315,14 @@ client.loop();
 
 checkTimers();
 
-if(millis()-lastPublish>=5000){
+// full status every 30 seconds
+if(millis()-lastPublish>=30000){
 
 publishAllRelays();
 lastPublish=millis();
 }
 
-// Daily reset
+// reset daily usage
 struct tm timeinfo;
 
 if(getLocalTime(&timeinfo)){
