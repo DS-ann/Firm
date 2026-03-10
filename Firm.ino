@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
+#include <ArduinoJson.h> // Add this library
 
 // ===== WiFi =====
 const char* ssid = "Lenovo";
@@ -9,8 +10,8 @@ const char* password = "debarghya";
 // ===== HiveMQ TLS Broker =====
 const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
 const int mqttPort = 8883;  // TLS port
-const char* mqttUser = "Debarghya_Sannigrahi"; // HiveMQ username
-const char* mqttPassword = "Dsann#5956";       // HiveMQ password
+const char* mqttUser = "Debarghya_Sannigrahi"; 
+const char* mqttPassword = "Dsann#5956";       
 
 const char* mqttCommandTopic = "home/esp32/commands";
 const char* mqttStatusTopic  = "home/esp32/status";
@@ -53,17 +54,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   for (unsigned int i = 0; i < length; i++) msg += (char)payload[i];
   Serial.printf("MQTT message received: %s\n", msg.c_str());
 
-  // Expected JSON: {"relay":0,"state":1}
-  int relayID = -1;
-  int state = -1;
+  // Parse JSON using ArduinoJson
+  DynamicJsonDocument doc(128);
+  DeserializationError error = deserializeJson(doc, msg);
+  if (error) {
+    Serial.println("Failed to parse JSON!");
+    return;
+  }
 
-  int rIndex = msg.indexOf("relay");
-  int sIndex = msg.indexOf("state");
+  int relayID = doc["relay"];
+  bool state = doc["state"];
 
-  if (rIndex != -1 && sIndex != -1) {
-    relayID = msg.substring(rIndex + 6, msg.indexOf(",", rIndex)).toInt();
-    state   = msg.substring(sIndex + 6, msg.indexOf("}", sIndex)).toInt();
-    setRelay(relayID, state != 0);
+  if (relayID >= 0 && relayID < NUM_RELAYS) {
+    setRelay(relayID, state);
+  } else {
+    Serial.println("Invalid relay ID received!");
   }
 }
 
@@ -79,8 +84,10 @@ bool connectMQTT() {
   if (client.connect(deviceID.c_str(), mqttUser, mqttPassword)) {
     Serial.println("MQTT Connected!");
     client.subscribe(mqttCommandTopic); // Subscribe to commands
+
     // Publish all relays state once
     for (int i = 0; i < NUM_RELAYS; i++) publishRelayState(i);
+
     return true;
   } else {
     int state = client.state();
