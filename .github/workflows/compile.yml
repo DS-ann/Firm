@@ -40,9 +40,11 @@ jobs:
       # -------------------------
       - name: Install required libraries
         run: |
-          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences" "NimBLE-Arduino"; do
+          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences"; do
             arduino-cli lib install "$lib"
           done
+          # Install latest NimBLE-Arduino
+          arduino-cli lib install "NimBLE-Arduino@1.5.1"
 
       # -------------------------
       # Compile firmware
@@ -51,7 +53,7 @@ jobs:
         run: |
           arduino-cli compile \
             --fqbn esp32:esp32:esp32 \
-            --build-properties partition_scheme=huge_app \
+            --build-property partition_scheme=huge_app \
             --output-dir build \
             .
 
