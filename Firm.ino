@@ -39,6 +39,9 @@ PubSubClient client(espClient);
 Preferences prefs;
 BluetoothSerial SerialBT;
 
+// ===== Task =====
+TaskHandle_t btTask;
+
 // ===== Timers =====
 unsigned long lastRelayPublish = 0;
 unsigned long lastWiFiReport = 0;
@@ -62,7 +65,7 @@ void WiFiEvent(WiFiEvent_t event){
   }
 }
 
-// ===== Smart WiFi Connect =====
+// ===== WiFi Connect =====
 void connectWiFi(){
 
   Serial.println("Scanning WiFi...");
@@ -74,7 +77,7 @@ void connectWiFi(){
   int n = WiFi.scanNetworks();
 
   if(n == 0){
-    Serial.println("No WiFi networks found");
+    Serial.println("No WiFi found");
     return;
   }
 
@@ -119,7 +122,7 @@ void connectWiFi(){
     Serial.println("WiFi connected");
     Serial.println(WiFi.localIP());
   }else{
-    Serial.println("WiFi connection failed");
+    Serial.println("WiFi failed");
   }
 }
 
@@ -145,7 +148,7 @@ void setRelay(int id,bool state){
   prefs.putBool(key,state);
 }
 
-// ===== Timer check =====
+// ===== Timer Check =====
 void checkTimers(){
 
   unsigned long now = millis();
@@ -159,12 +162,12 @@ void checkTimers(){
     }
 
     else if(relayEndTime[i]>now){
-      relayTimers[i] = relayEndTime[i]-now;
+      relayTimers[i]=relayEndTime[i]-now;
     }
   }
 }
 
-// ===== Publish relay =====
+// ===== Publish Relay =====
 void publishRelay(int id){
 
   if(client.connected()){
@@ -213,8 +216,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
     setRelay(id,state);
 
     if(timer>0){
-      relayEndTime[id] = millis()+timer*1000;
-      relayTimers[id] = timer*1000;
+      relayEndTime[id]=millis()+timer*1000;
+      relayTimers[id]=timer*1000;
     }
 
     publishRelay(id);
@@ -246,66 +249,63 @@ bool connectMQTT(){
   return false;
 }
 
-// ===== Bluetooth start =====
-void startBT(){
+// ===== Bluetooth Task =====
+void bluetoothTask(void * parameter){
 
-  if(btRunning) return;
+  while(true){
 
-  SerialBT.begin("RanjanaSmartHome");
+    if(btRunning){
 
-  btRunning = true;
+      if(SerialBT.available()){
 
-  Serial.println("Bluetooth started");
-}
+        String data = SerialBT.readStringUntil('\n');
 
-// ===== Bluetooth stop =====
-void stopBT(){
+        StaticJsonDocument<128> doc;
 
-  if(!btRunning) return;
+        if(!deserializeJson(doc,data)){
 
-  SerialBT.end();
+          int id = doc["r"];
+          bool state = doc["s"];
+          int timer = doc["t"];
 
-  btRunning = false;
+          if(id>=0 && id<NUM_RELAYS){
 
-  Serial.println("Bluetooth stopped");
-}
+            setRelay(id,state);
 
-// ===== Bluetooth commands =====
-void handleBluetooth(){
+            if(timer>0){
+              relayEndTime[id]=millis()+timer*1000;
+              relayTimers[id]=timer*1000;
+            }
 
-  if(!btRunning) return;
-
-  if(SerialBT.available()){
-
-    String data = SerialBT.readStringUntil('\n');
-
-    StaticJsonDocument<128> doc;
-
-    if(!deserializeJson(doc,data)){
-
-      int id = doc["r"];
-      bool state = doc["s"];
-      int timer = doc["t"];
-
-      if(id>=0 && id<NUM_RELAYS){
-
-        setRelay(id,state);
-
-        if(timer>0){
-          relayEndTime[id]=millis()+timer*1000;
-          relayTimers[id]=timer*1000;
+            publishRelay(id);
+          }
         }
-
-        publishRelay(id);
       }
     }
+
+    vTaskDelay(10);
   }
+}
+
+// ===== Bluetooth Control =====
+void startBT(){
+  if(btRunning) return;
+  SerialBT.begin("RanjanaSmartHome");
+  btRunning=true;
+}
+
+void stopBT(){
+  if(!btRunning) return;
+  SerialBT.end();
+  btRunning=false;
 }
 
 // ===== Setup =====
 void setup(){
 
   Serial.begin(115200);
+
+  client.setBufferSize(512);
 
   for(int i=0;i<NUM_RELAYS;i++){
     pinMode(relayPins[i],OUTPUT);
@@ -318,26 +318,34 @@ void setup(){
 
   connectWiFi();
 
+  delay(3000);
+
   configTime(19800,0,"pool.ntp.org","time.nist.gov");
 
   connectMQTT();
+
+  xTaskCreatePinnedToCore(
+    bluetoothTask,
+    "BluetoothTask",
+    5000,
+    NULL,
+    1,
+    &btTask,
+    1
+  );
 }
 
 // ===== Loop =====
 void loop(){
 
-  // Retry WiFi
   if(WiFi.status()!=WL_CONNECTED){
 
     if(millis()-lastWiFiRetry>10000){
-
-      Serial.println("Retry WiFi...");
       connectWiFi();
-      lastWiFiRetry = millis();
+      lastWiFiRetry=millis();
     }
   }
 
-  // MQTT reconnect
   if(WiFi.status()==WL_CONNECTED && !client.connected() && millis()-lastMQTTCheck>5000){
     connectMQTT();
     lastMQTTCheck=millis();
@@ -345,7 +353,6 @@ void loop(){
 
   if(client.connected()) client.loop();
 
-  // Bluetooth switching
   if(client.connected()){
     if(btRunning) stopBT();
   }
@@ -353,34 +360,7 @@ void loop(){
     if(!btRunning) startBT();
   }
 
-  handleBluetooth();
-
   checkTimers();
 
-  if(millis()-lastRelayPublish>=5000){
-
-    publishRelay(relayIndex);
-
-    relayIndex++;
-    if(relayIndex>=NUM_RELAYS) relayIndex=0;
-
-    lastRelayPublish=millis();
-  }
-
-  if(millis()-lastWiFiReport>=20000 && client.connected()){
-
-    StaticJsonDocument<64> doc;
-
-    doc["n"]=WiFi.SSID();
-    doc["r"]=WiFi.RSSI();
-
-    char buf[64];
-    serializeJson(doc,buf);
-
-    client.publish(mqttWifiTopic,buf);
-
-    lastWiFiReport=millis();
-  }
-
-  delay(50);
+  delay(5);
 }
