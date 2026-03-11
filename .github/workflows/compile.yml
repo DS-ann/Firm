@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Force Node.js 24 for actions
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -16,7 +16,7 @@ jobs:
       # Checkout repository
       # -------------------------
       - name: Checkout repository
-        uses: actions/checkout@v5   # Latest version supporting Node 24
+        uses: actions/checkout@v5
 
       # -------------------------
       # Install Arduino CLI
@@ -40,11 +40,13 @@ jobs:
       # -------------------------
       - name: Install required libraries
         run: |
-          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences"; do
+          # Standard libraries
+          for lib in "ArduinoJson" "PubSubClient" "Preferences"; do
             arduino-cli lib install "$lib"
           done
-          # Install latest NimBLE-Arduino
-          arduino-cli lib install "NimBLE-Arduino@1.5.1"
+
+          # BLE library via GitHub URL (latest NimBLE-Arduino releases)
+          arduino-cli lib install "https://github.com/h2zero/NimBLE-Arduino/archive/refs/heads/main.zip"
 
       # -------------------------
       # Compile firmware
@@ -66,7 +68,7 @@ jobs:
           cp build/*.bin firmware/
 
       # -------------------------
-      # Upload firmware as artifact
+      # Upload firmware artifact
       # -------------------------
       - name: Upload firmware
         uses: actions/upload-artifact@v5
