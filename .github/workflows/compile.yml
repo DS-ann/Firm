@@ -40,17 +40,22 @@ jobs:
       # -------------------------
       - name: Install required libraries
         run: |
-          # Standard index libraries
+          # Standard libraries
           for lib in "ArduinoJson" "PubSubClient" "Preferences"; do
             arduino-cli lib install "$lib"
           done
 
-          # Download latest NimBLE-Arduino release zip
+          # NimBLE-Arduino latest release
           mkdir -p /tmp/nimble
-          curl -L https://github.com/h2zero/NimBLE-Arduino/releases/latest/download/NimBLE-Arduino.zip -o /tmp/nimble/NimBLE-Arduino
+          curl -L -o /tmp/nimble/NimBLE-Arduino.zip \
+            https://github.com/h2zero/NimBLE-Arduino/releases/latest/download/NimBLE-Arduino.zip
 
-          # Unzip & install locally
-          unzip /tmp/nimble/NimBLE-Arduino -d /tmp/nimble/
+          # Verify zip
+          ls -lh /tmp/nimble/
+          file /tmp/nimble/NimBLE-Arduino.zip
+
+          # Unzip and install
+          unzip -o /tmp/nimble/NimBLE-Arduino.zip -d /tmp/nimble/
           arduino-cli lib install /tmp/nimble/NimBLE-Arduino
 
       # -------------------------
@@ -73,7 +78,7 @@ jobs:
           cp build/*.bin firmware/
 
       # -------------------------
-      # Upload firmware artifact
+      # Upload firmware as artifact
       # -------------------------
       - name: Upload firmware
         uses: actions/upload-artifact@v5
