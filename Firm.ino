@@ -43,6 +43,7 @@ BluetoothSerial SerialBT;
 unsigned long lastRelayPublish = 0;
 unsigned long lastWiFiReport = 0;
 unsigned long lastMQTTCheck = 0;
+unsigned long lastWiFiRetry = 0;
 
 int relayIndex = 0;
 bool btRunning = false;
@@ -57,38 +58,69 @@ String getDeviceID(){
 // ===== WiFi Event =====
 void WiFiEvent(WiFiEvent_t event){
   if(event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED){
-    Serial.println("WiFi lost -> reconnecting");
-    WiFi.reconnect();
+    Serial.println("WiFi disconnected");
   }
 }
 
-// ===== WiFi Connect =====
+// ===== Smart WiFi Connect =====
 void connectWiFi(){
 
+  Serial.println("Scanning WiFi...");
+
   WiFi.mode(WIFI_STA);
-  WiFi.onEvent(WiFiEvent);
-  WiFi.setAutoReconnect(true);
+  WiFi.disconnect(true);
+  delay(500);
 
-  for(int i=0;i<NUM_WIFI;i++){
+  int n = WiFi.scanNetworks();
 
-    WiFi.begin(ssidList[i],passwordList[i]);
-
-    unsigned long start = millis();
-
-    while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
-      delay(200);
-    }
-
-    if(WiFi.status()==WL_CONNECTED){
-      Serial.println("WiFi connected");
-      return;
-    }
-
-    WiFi.disconnect();
-    delay(1000);
+  if(n == 0){
+    Serial.println("No WiFi networks found");
+    return;
   }
 
-  Serial.println("WiFi failed");
+  int bestRSSI = -1000;
+  int bestSSID = -1;
+
+  for(int i=0;i<n;i++){
+
+    String found = WiFi.SSID(i);
+
+    for(int j=0;j<NUM_WIFI;j++){
+
+      if(found == ssidList[j]){
+
+        int rssi = WiFi.RSSI(i);
+
+        if(rssi > bestRSSI){
+          bestRSSI = rssi;
+          bestSSID = j;
+        }
+      }
+    }
+  }
+
+  if(bestSSID == -1){
+    Serial.println("Known WiFi not found");
+    return;
+  }
+
+  Serial.print("Connecting to ");
+  Serial.println(ssidList[bestSSID]);
+
+  WiFi.begin(ssidList[bestSSID], passwordList[bestSSID]);
+
+  unsigned long start = millis();
+
+  while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
+    delay(200);
+  }
+
+  if(WiFi.status()==WL_CONNECTED){
+    Serial.println("WiFi connected");
+    Serial.println(WiFi.localIP());
+  }else{
+    Serial.println("WiFi connection failed");
+  }
 }
 
 // ===== Relay Control =====
@@ -96,15 +128,15 @@ void setRelay(int id,bool state){
 
   if(id<0 || id>=NUM_RELAYS) return;
 
-  if(state && !relayState[id]) relayStartTime[id] = millis();
+  if(state && !relayState[id]) relayStartTime[id]=millis();
 
   if(!state && relayState[id]){
-    unsigned long dur = millis() - relayStartTime[id];
+    unsigned long dur = millis()-relayStartTime[id];
     relayUsageTotal[id]+=dur;
     relayUsageToday[id]+=dur;
   }
 
-  relayState[id] = state;
+  relayState[id]=state;
 
   digitalWrite(relayPins[id],state?LOW:HIGH);
 
@@ -135,7 +167,7 @@ void checkTimers(){
 // ===== Publish relay =====
 void publishRelay(int id){
 
-  if(client.connected() && WiFi.status()==WL_CONNECTED){
+  if(client.connected()){
 
     StaticJsonDocument<96> doc;
 
@@ -282,6 +314,8 @@ void setup(){
 
   prefs.begin("relayState",false);
 
+  WiFi.onEvent(WiFiEvent);
+
   connectWiFi();
 
   configTime(19800,0,"pool.ntp.org","time.nist.gov");
@@ -292,7 +326,26 @@ void setup(){
 // ===== Loop =====
 void loop(){
 
-  // MQTT / Bluetooth switching
+  // Retry WiFi
+  if(WiFi.status()!=WL_CONNECTED){
+
+    if(millis()-lastWiFiRetry>10000){
+
+      Serial.println("Retry WiFi...");
+      connectWiFi();
+      lastWiFiRetry = millis();
+    }
+  }
+
+  // MQTT reconnect
+  if(WiFi.status()==WL_CONNECTED && !client.connected() && millis()-lastMQTTCheck>5000){
+    connectMQTT();
+    lastMQTTCheck=millis();
+  }
+
+  if(client.connected()) client.loop();
+
+  // Bluetooth switching
   if(client.connected()){
     if(btRunning) stopBT();
   }
@@ -302,13 +355,6 @@ void loop(){
 
   handleBluetooth();
 
-  if(WiFi.status()==WL_CONNECTED && !client.connected() && millis()-lastMQTTCheck>5000){
-    connectMQTT();
-    lastMQTTCheck = millis();
-  }
-
-  if(client.connected()) client.loop();
-
   checkTimers();
 
   if(millis()-lastRelayPublish>=5000){
@@ -316,13 +362,12 @@ void loop(){
     publishRelay(relayIndex);
 
     relayIndex++;
-
     if(relayIndex>=NUM_RELAYS) relayIndex=0;
 
-    lastRelayPublish = millis();
+    lastRelayPublish=millis();
   }
 
-  if(millis()-lastWiFiReport>=20000 && WiFi.status()==WL_CONNECTED){
+  if(millis()-lastWiFiReport>=20000 && client.connected()){
 
     StaticJsonDocument<64> doc;
 
@@ -334,8 +379,8 @@ void loop(){
 
     client.publish(mqttWifiTopic,buf);
 
-    lastWiFiReport = millis();
+    lastWiFiReport=millis();
   }
 
-  delay(100);
+  delay(50);
 }
