@@ -16,7 +16,7 @@ jobs:
       # Checkout repository
       # -------------------------
       - name: Checkout repository
-        uses: actions/checkout@v5   # Updated to latest version supporting Node 24
+        uses: actions/checkout@v5   # Latest version supporting Node 24
 
       # -------------------------
       # Install Arduino CLI
@@ -40,7 +40,7 @@ jobs:
       # -------------------------
       - name: Install required libraries
         run: |
-          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences"; do
+          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences" "NimBLE-Arduino"; do
             arduino-cli lib install "$lib"
           done
 
@@ -67,7 +67,7 @@ jobs:
       # Upload firmware as artifact
       # -------------------------
       - name: Upload firmware
-        uses: actions/upload-artifact@v5   # Updated to latest version
+        uses: actions/upload-artifact@v5
         with:
           name: esp32-firmware
           path: firmware
