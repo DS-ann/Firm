@@ -50,8 +50,7 @@ jobs:
       - name: Compile firmware
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32 \
-            --build-property partition_scheme=huge_app \
+           --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
             --output-dir build \
             .
 
