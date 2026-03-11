@@ -56,33 +56,49 @@ String getDeviceID() {
 BLEServer* pServer = nullptr;
 BLECharacteristic* pCharacteristic = nullptr;
 bool bleConnected = false;
+
 #define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
 #define CHARACTERISTIC_UUID "87654321-4321-4321-4321-ba0987654321"
 
-// BLE callbacks
+// BLE server callbacks
 class MyServerCallbacks: public BLEServerCallbacks {
-  void onConnect(BLEServer* pServer){ bleConnected = true; }
-  void onDisconnect(BLEServer* pServer){ bleConnected = false; }
+  void onConnect(BLEServer* pServer){
+    bleConnected = true;
+  }
+
+  void onDisconnect(BLEServer* pServer){
+    bleConnected = false;
+  }
 };
 
+// ===== FIXED BLE CALLBACK =====
 class MyCallbacks: public BLECharacteristicCallbacks {
+
   void onWrite(BLECharacteristic* pCharacteristic){
-    std::string rxStd = pCharacteristic->getValue();   // get std::string
-    if(rxStd.length() == 0) return;
 
-    // Convert std::string to const char* for ArduinoJson
-    const char* rxValue = rxStd.c_str();
-    StaticJsonDocument<64> doc;
-    if(deserializeJson(doc, rxValue)) return;
+    String rxValue = pCharacteristic->getValue();   // FIXED
 
-    int id = doc["r"];
-    bool state = doc["s"];
-    unsigned long timer = doc["t"];
-    if(id>=0 && id<NUM_RELAYS){
-      setRelay(id,state);
-      if(timer>0){
-        relayEndTime[id] = millis() + timer*1000;
-        relayTimers[id] = timer*1000;
+    if(rxValue.length() > 0){
+
+      StaticJsonDocument<128> doc;
+
+      DeserializationError err = deserializeJson(doc, rxValue);
+
+      if(!err){
+
+        int id = doc["r"];
+        bool state = doc["s"];
+        unsigned long timer = doc["t"];
+
+        if(id >= 0 && id < NUM_RELAYS){
+
+          setRelay(id,state);
+
+          if(timer > 0){
+            relayEndTime[id] = millis() + timer * 1000;
+            relayTimers[id] = timer * 1000;
+          }
+        }
       }
     }
   }
@@ -92,21 +108,27 @@ class MyCallbacks: public BLECharacteristicCallbacks {
 void connectWiFi(){
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true,true);
+
   for(int i=0;i<NUM_WIFI;i++){
     WiFi.begin(ssidList[i], passwordList[i]);
+
     unsigned long start = millis();
-    while(WiFi.status() != WL_CONNECTED && millis()-start<10000){
+
+    while(WiFi.status() != WL_CONNECTED && millis()-start < 10000){
       delay(200);
     }
+
     if(WiFi.status() == WL_CONNECTED) break;
   }
 }
 
 // ===== Relay =====
 void setRelay(int id, bool state){
-  if(id<0 || id>=NUM_RELAYS) return;
+
+  if(id < 0 || id >= NUM_RELAYS) return;
 
   if(state && !relayState[id]) relayStartTime[id] = millis();
+
   if(!state && relayState[id]){
     unsigned long dur = millis() - relayStartTime[id];
     relayUsageTotal[id] += dur;
@@ -114,41 +136,62 @@ void setRelay(int id, bool state){
   }
 
   relayState[id] = state;
-  digitalWrite(relayPins[id], state?LOW:HIGH);
 
-  char key[10]; sprintf(key,"relay%d",id);
+  digitalWrite(relayPins[id], state ? LOW : HIGH);
+
+  char key[10];
+  sprintf(key,"relay%d",id);
   prefs.putBool(key,state);
 }
 
-// Timer check
+// ===== Timer =====
 void checkTimers(){
+
   unsigned long now = millis();
+
   for(int i=0;i<NUM_RELAYS;i++){
-    if(relayEndTime[i]>0 && now>=relayEndTime[i]){
+
+    if(relayEndTime[i] > 0 && now >= relayEndTime[i]){
+
       setRelay(i,false);
-      relayEndTime[i] = relayTimers[i] = 0;
-    } else if(relayEndTime[i]>now){
-      relayTimers[i] = relayEndTime[i]-now;
+      relayEndTime[i] = 0;
+      relayTimers[i] = 0;
+    }
+    else if(relayEndTime[i] > now){
+      relayTimers[i] = relayEndTime[i] - now;
     }
   }
 }
 
-// Publish relay
+// ===== Publish relay =====
 void publishRelay(int id){
+
   if(client.connected() && WiFi.status()==WL_CONNECTED){
-    StaticJsonDocument<64> doc;
-    doc["r"]=id; doc["s"]=relayState[id]?1:0;
-    doc["t"]=relayTimers[id]/1000;
-    doc["ut"]=relayUsageTotal[id]/60000;
-    doc["ud"]=relayUsageToday[id]/60000;
-    char buf[128]; serializeJson(doc,buf);
+
+    StaticJsonDocument<96> doc;
+
+    doc["r"] = id;
+    doc["s"] = relayState[id] ? 1 : 0;
+    doc["t"] = relayTimers[id] / 1000;
+    doc["ut"] = relayUsageTotal[id] / 60000;
+    doc["ud"] = relayUsageToday[id] / 60000;
+
+    char buf[128];
+    serializeJson(doc,buf);
+
     client.publish(mqttUpdateTopic,buf);
   }
 
   if(bleConnected){
+
     StaticJsonDocument<64> docBT;
-    docBT["r"]=id; docBT["s"]=relayState[id]?1:0;
-    char buf[64]; serializeJson(docBT,buf);
+
+    docBT["r"] = id;
+    docBT["s"] = relayState[id] ? 1 : 0;
+
+    char buf[64];
+    serializeJson(docBT,buf);
+
     pCharacteristic->setValue(buf);
     pCharacteristic->notify();
   }
@@ -156,112 +199,167 @@ void publishRelay(int id){
 
 // ===== MQTT =====
 void mqttCallback(char* topic, byte* payload, unsigned int len){
-  StaticJsonDocument<64> doc;
+
+  StaticJsonDocument<128> doc;
+
   if(deserializeJson(doc,payload,len)) return;
 
-  int id=doc["r"];
-  bool state=doc["s"];
-  unsigned long timer=doc["t"];
-  if(id>=0 && id<NUM_RELAYS){
+  int id = doc["r"];
+  bool state = doc["s"];
+  unsigned long timer = doc["t"];
+
+  if(id >= 0 && id < NUM_RELAYS){
+
     setRelay(id,state);
-    if(timer>0){
+
+    if(timer > 0){
       relayEndTime[id] = millis() + timer*1000;
       relayTimers[id] = timer*1000;
     }
+
     publishRelay(id);
   }
 }
 
 bool connectMQTT(){
+
   String devID = getDeviceID();
+
   espClient.setInsecure();
+
   client.setServer(mqttServer,mqttPort);
   client.setCallback(mqttCallback);
   client.setKeepAlive(60);
+
   if(client.connect(devID.c_str(),mqttUser,mqttPassword)){
+
     client.subscribe(mqttCommandTopic);
+
     client.publish(mqttWelcomeTopic,"Welcome",true);
+
     for(int i=0;i<NUM_RELAYS;i++) publishRelay(i);
+
     Serial.println("MQTT Connected");
+
     return true;
   }
+
   Serial.println("MQTT Failed");
   return false;
 }
 
 // ===== BLE Task =====
 void BLETask(void* param){
+
   BLEDevice::init("RanjanaSmartHome");
+
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
-  BLEService* pService = pServer->createService(SERVICE_UUID);
+
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
   pCharacteristic = pService->createCharacteristic(
                     CHARACTERISTIC_UUID,
                     BLECharacteristic::PROPERTY_READ |
                     BLECharacteristic::PROPERTY_WRITE |
                     BLECharacteristic::PROPERTY_NOTIFY
-  );
+                    );
+
   pCharacteristic->setCallbacks(new MyCallbacks());
+
   pService->start();
+
   pServer->getAdvertising()->start();
 
-  while(true) vTaskDelay(100/portTICK_PERIOD_MS);
+  delay(60000);
+
+  while(true){
+    vTaskDelay(100/portTICK_PERIOD_MS);
+  }
 }
 
 // ===== Setup =====
 void setup(){
+
   Serial.begin(115200);
 
   for(int i=0;i<NUM_RELAYS;i++){
+
     pinMode(relayPins[i],OUTPUT);
+
     digitalWrite(relayPins[i],HIGH);
-    relayState[i]=false; relayTimers[i]=0; relayEndTime[i]=0;
-    relayUsageTotal[i]=0; relayUsageToday[i]=0;
+
+    relayState[i]=false;
+    relayTimers[i]=0;
+    relayEndTime[i]=0;
+
+    relayUsageTotal[i]=0;
+    relayUsageToday[i]=0;
   }
 
   prefs.begin("relayState",false);
+
   for(int i=0;i<NUM_RELAYS;i++){
-    char key[10]; sprintf(key,"relay%d",i);
-    relayState[i]=prefs.getBool(key,false);
-    digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
+
+    char key[10];
+    sprintf(key,"relay%d",i);
+
+    relayState[i] = prefs.getBool(key,false);
+
+    digitalWrite(relayPins[i], relayState[i] ? LOW : HIGH);
   }
 
   connectWiFi();
+
   configTime(19800,0,"pool.ntp.org","time.nist.gov");
+
   connectMQTT();
 
-  // BLE on Core 1
   xTaskCreatePinnedToCore(BLETask,"BLETask",8192,NULL,1,NULL,1);
 }
 
 // ===== Loop =====
 void loop(){
+
   if(WiFi.status()!=WL_CONNECTED && millis()-lastWiFiReport>10000){
+
     connectWiFi();
-    lastWiFiReport=millis();
+    lastWiFiReport = millis();
   }
 
   if(WiFi.status()==WL_CONNECTED && !client.connected() && millis()-lastMQTTCheck>5000){
+
     connectMQTT();
-    lastMQTTCheck=millis();
+    lastMQTTCheck = millis();
   }
 
   if(client.connected()) client.loop();
+
   checkTimers();
 
   if(millis()-lastRelayPublish>=5000){
+
     publishRelay(relayIndex);
-    relayIndex++; if(relayIndex>=NUM_RELAYS) relayIndex=0;
-    lastRelayPublish=millis();
+
+    relayIndex++;
+    if(relayIndex>=NUM_RELAYS) relayIndex=0;
+
+    lastRelayPublish = millis();
   }
 
-  // WiFi info every 20 sec
   if(millis()-lastWiFiReport>=20000 && WiFi.status()==WL_CONNECTED){
+
     StaticJsonDocument<64> doc;
-    doc["n"]=WiFi.SSID(); doc["r"]=WiFi.RSSI();
-    char buf[64]; serializeJson(doc,buf);
+
+    doc["n"]=WiFi.SSID();
+    doc["r"]=WiFi.RSSI();
+
+    char buf[64];
+    serializeJson(doc,buf);
+
     client.publish(mqttWifiTopic,buf);
-    lastWiFiReport=millis();
+
+    lastWiFiReport = millis();
   }
 
   delay(100);
