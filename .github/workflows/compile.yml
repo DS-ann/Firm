@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Force Node.js 24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true # Force Node.js 24
 
 jobs:
   build:
@@ -36,27 +36,27 @@ jobs:
           arduino-cli core install esp32:esp32
 
       # -------------------------
-      # Install required libraries
+      # Install libraries
       # -------------------------
       - name: Install required libraries
         run: |
-          # Standard libraries
+          # Indexed libraries
           for lib in "ArduinoJson" "PubSubClient" "Preferences"; do
             arduino-cli lib install "$lib"
           done
 
-          # NimBLE-Arduino latest release
+          # Download real NimBLE‑Arduino release zip
           mkdir -p /tmp/nimble
-          curl -L -o /tmp/nimble/NimBLE-Arduino.zip \
-            https://github.com/h2zero/NimBLE-Arduino/releases/latest/download/NimBLE-Arduino.zip
+          curl -L -o /tmp/nimble/NimBLE_Arduino.zip \
+            https://arduinolibraries.info/download/nim-ble-arduino/NimBLE_Arduino-2.3.7.zip
 
-          # Verify zip
+          # Show file info (for debugging)
           ls -lh /tmp/nimble/
-          file /tmp/nimble/NimBLE-Arduino.zip
+          file /tmp/nimble/NimBLE_Arduino.zip
 
-          # Unzip and install
-          unzip -o /tmp/nimble/NimBLE-Arduino.zip -d /tmp/nimble/
-          arduino-cli lib install /tmp/nimble/NimBLE-Arduino
+          # Unzip and install locally
+          unzip -o /tmp/nimble/NimBLE_Arduino.zip -d /tmp/nimble/
+          arduino-cli lib install /tmp/nimble/NimBLE_Arduino
 
       # -------------------------
       # Compile firmware
@@ -78,7 +78,7 @@ jobs:
           cp build/*.bin firmware/
 
       # -------------------------
-      # Upload firmware as artifact
+      # Upload firmware artifact
       # -------------------------
       - name: Upload firmware
         uses: actions/upload-artifact@v5
