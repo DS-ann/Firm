@@ -101,7 +101,6 @@ void publishRelay(int id) {
     client.publish(mqttUpdateTopic, payload);
   }
 
-  // Also send via BluetoothSerial
   if(btStarted){
     StaticJsonDocument<128> docBT;
     docBT["relay"] = id;
@@ -186,10 +185,12 @@ bool connectMQTT() {
   return false;
 }
 
-// ===== BLE Task (for Serial BT) =====
+// ===== Bluetooth Serial Task =====
 void BTTask(void* parameter){
-  delay(60000); // wait 1 min
-  BTSerial.begin("RanjanaSmartHome"); // Bluetooth Classic Serial
+  // Wait 1 minute before starting Bluetooth
+  vTaskDelay(pdMS_TO_TICKS(60000));
+
+  BTSerial.begin("RanjanaSmartHome"); // Start Bluetooth Serial
   btStarted = true;
   Serial.println("Bluetooth Serial started.");
 
@@ -197,15 +198,15 @@ void BTTask(void* parameter){
     if(BTSerial.available()){
       String cmd = BTSerial.readStringUntil('\n');
       if(cmd.length() >= 2){
-        int relay = cmd[0] - '0';
-        int state = cmd[1] - '0';
+        int relay = cmd[0]-'0';
+        int state = cmd[1]-'0';
         if(relay >=0 && relay < NUM_RELAYS){
           setRelay(relay,state);
           publishRelay(relay); // Sync MQTT
         }
       }
     }
-    vTaskDelay(20/portTICK_PERIOD_MS);
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
 
@@ -234,8 +235,8 @@ void setup() {
   configTime(19800,0,"pool.ntp.org","time.nist.gov");
   connectMQTT();
 
-  // Start BluetoothSerial task on Core 1
-  xTaskCreatePinnedToCore(BTTask,"BTTask",4096,NULL,1,NULL,1);
+  // Start BluetoothSerial task on Core 0
+  xTaskCreatePinnedToCore(BTTask,"BTTask",8192,NULL,1,NULL,0);
 }
 
 // ===== Loop =====
@@ -275,7 +276,7 @@ void loop() {
     serializeJson(doc,payload);
     client.publish("home/esp32/wifi_status",payload);
     if(btStarted) BTSerial.println(payload);
-    lastWiFiReport = millis() + 1000000; // wait until next relay
+    lastWiFiReport = millis() + 1000000; // prevent repeated until next relay
   }
 
   delay(100);
