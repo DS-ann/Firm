@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Force Node.js 24
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
@@ -38,26 +38,15 @@ jobs:
       # -------------------------
       # Install required libraries
       # -------------------------
-      - name: Install libraries
+      - name: Install required libraries
         run: |
-          # Indexed libraries
-          for lib in "ArduinoJson" "PubSubClient" "Preferences"; do
+          mkdir -p /tmp/nimble
+          cd /tmp/nimble
+          curl -L -o NimBLE-Arduino-2.3.9.zip https://github.com/h2zero/NimBLE-Arduino/archive/refs/tags/2.3.9.zip
+          arduino-cli lib install NimBLE-Arduino-2.3.9.zip
+          for lib in "ArduinoJson" "PubSubClient" "Preferences" "ArduinoWebsockets"; do
             arduino-cli lib install "$lib"
           done
-
-          # Download NimBLE‑Arduino source for v2.3.9
-          mkdir -p /tmp/nimble
-          curl -L -o /tmp/nimble/NimBLE‑Arduino‑2.3.9.zip \
-            https://github.com/h2zero/NimBLE-Arduino/archive/refs/tags/2.3.9.zip
-
-          # List downloaded file
-          ls -lh /tmp/nimble
-
-          # Unzip
-          unzip -o /tmp/nimble/NimBLE‑Arduino‑2.3.9.zip -d /tmp/nimble/
-
-          # Install locally
-          arduino-cli lib install /tmp/nimble/NimBLE-Arduino-2.3.9
 
       # -------------------------
       # Compile firmware
@@ -79,7 +68,7 @@ jobs:
           cp build/*.bin firmware/
 
       # -------------------------
-      # Upload firmware artifact
+      # Upload firmware as artifact
       # -------------------------
       - name: Upload firmware
         uses: actions/upload-artifact@v5
