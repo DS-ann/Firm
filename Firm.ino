@@ -4,7 +4,7 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <Preferences.h>
-#include <NimBLEDevice.h>
+#include "BluetoothSerial.h"
 
 // ===== WiFi =====
 #define NUM_WIFI 4
@@ -54,38 +54,11 @@ String getDeviceID() {
   return id;
 }
 
-// ===== BLE Setup =====
-#define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
-#define CHAR_COMMAND_UUID   "abcd1234-1234-1234-1234-abcdef123456"
-#define CHAR_STATUS_UUID    "abcd5678-1234-1234-1234-abcdef123456"
+// ===== Bluetooth Serial =====
+BluetoothSerial BTSerial;
+bool btStarted = false;
 
-NimBLEServer* pServer;
-NimBLEService* pService;
-NimBLECharacteristic* commandChar;
-NimBLECharacteristic* statusChar;
-
-// ===== BLE Command Callback =====
-class RelayCommandCallback : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic* pCharacteristic) override {
-    std::string value = pCharacteristic->getValue();
-    if(value.length() < 3) return;
-
-    int relay = value[0] - '0';
-    int state = value[1] - '0';
-    int timer = (value.length() > 2) ? value[2] - '0' : 0;
-
-    if(relay >= 0 && relay < NUM_RELAYS){
-      setRelay(relay, state);
-      if(timer > 0){
-        relayEndTime[relay] = millis() + timer * 1000;
-        relayTimers[relay] = timer * 1000;
-      }
-      publishRelay(relay);
-    }
-  }
-};
-
-// ===== WiFi connect with logging =====
+// ===== WiFi connect =====
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true,true);
@@ -115,29 +88,31 @@ void connectWiFi() {
 
 // ===== Publish relay =====
 void publishRelay(int id) {
-  if(!client.connected() || WiFi.status() != WL_CONNECTED) return;
+  if(client.connected() && WiFi.status() == WL_CONNECTED){
+    StaticJsonDocument<128> doc;
+    doc["r"] = id;
+    doc["s"] = relayState[id] ? 1 : 0;
+    doc["t"] = relayTimers[id] / 1000;
+    doc["ut"] = relayUsageTotal[id] / 60000;
+    doc["ud"] = relayUsageToday[id] / 60000;
 
-  StaticJsonDocument<128> doc;
-  doc["r"] = id;
-  doc["s"] = relayState[id] ? 1 : 0;
-  doc["t"] = relayTimers[id] / 1000;
-  doc["ut"] = relayUsageTotal[id] / 60000;
-  doc["ud"] = relayUsageToday[id] / 60000;
+    char payload[192];
+    serializeJson(doc, payload);
+    client.publish(mqttUpdateTopic, payload);
+  }
 
-  char payload[192];
-  serializeJson(doc, payload);
-  client.publish(mqttUpdateTopic, payload);
+  // Also send via BluetoothSerial
+  if(btStarted){
+    StaticJsonDocument<128> docBT;
+    docBT["relay"] = id;
+    docBT["state"] = relayState[id];
+    char buf[128];
+    serializeJson(docBT, buf);
+    BTSerial.println(buf);
+  }
 
-  // Also update BLE
-  statusChar->setValue(payload);
-  statusChar->notify();
-
-  Serial.println(payload);
-}
-
-// ===== Publish all relays =====
-void publishAllRelays() {
-  for(int i = 0; i < NUM_RELAYS; i++) publishRelay(i);
+  Serial.print("Relay update: ");
+  Serial.println(relayState[id]);
 }
 
 // ===== Relay control =====
@@ -167,7 +142,7 @@ void checkTimers() {
       setRelay(i,false);
       relayEndTime[i] = 0;
       relayTimers[i] = 0;
-    } else if(relayEndTime[i] > now) {
+    } else if(relayEndTime[i] > now){
       relayTimers[i] = relayEndTime[i] - now;
     }
   }
@@ -185,10 +160,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   if(relayID >= 0 && relayID < NUM_RELAYS){
     setRelay(relayID, state);
     if(timerSec > 0){
-      relayEndTime[relayID] = millis() + timerSec * 1000;
-      relayTimers[relayID] = timerSec * 1000;
+      relayEndTime[relayID] = millis() + timerSec*1000;
+      relayTimers[relayID] = timerSec*1000;
     }
-    publishRelay(relayID); // Sync to BLE
+    publishRelay(relayID); // Sync to Bluetooth
   }
 }
 
@@ -204,11 +179,34 @@ bool connectMQTT() {
 
   if(client.connect(deviceID.c_str(), mqttUser, mqttPassword)){
     client.subscribe(mqttCommandTopic);
-    client.publish(mqttWelcomeTopic, "Welcome to Ranjana Smart Home", true);
-    publishAllRelays();
+    client.publish(mqttWelcomeTopic, "Welcome to Smart Home", true);
+    for(int i=0;i<NUM_RELAYS;i++) publishRelay(i);
     return true;
   }
   return false;
+}
+
+// ===== BLE Task (for Serial BT) =====
+void BTTask(void* parameter){
+  delay(60000); // wait 1 min
+  BTSerial.begin("RanjanaSmartHome"); // Bluetooth Classic Serial
+  btStarted = true;
+  Serial.println("Bluetooth Serial started.");
+
+  while(true){
+    if(BTSerial.available()){
+      String cmd = BTSerial.readStringUntil('\n');
+      if(cmd.length() >= 2){
+        int relay = cmd[0] - '0';
+        int state = cmd[1] - '0';
+        if(relay >=0 && relay < NUM_RELAYS){
+          setRelay(relay,state);
+          publishRelay(relay); // Sync MQTT
+        }
+      }
+    }
+    vTaskDelay(20/portTICK_PERIOD_MS);
+  }
 }
 
 // ===== Setup =====
@@ -229,33 +227,15 @@ void setup() {
   for(int i = 0; i < NUM_RELAYS; i++){
     char key[10]; sprintf(key,"relay%d",i);
     relayState[i] = prefs.getBool(key,false);
-    digitalWrite(relayPins[i], relayState[i] ? LOW : HIGH);
+    digitalWrite(relayPins[i], relayState[i]?LOW:HIGH);
   }
 
   connectWiFi();
   configTime(19800,0,"pool.ntp.org","time.nist.gov");
   connectMQTT();
 
-  // ===== BLE setup =====
-  NimBLEDevice::init("RanjanaSmartHome");
-  pServer = NimBLEDevice::createServer();
-  pService = pServer->createService(SERVICE_UUID);
-
-  commandChar = pService->createCharacteristic(
-    CHAR_COMMAND_UUID,
-    NIMBLE_PROPERTY::WRITE
-  );
-  commandChar->setCallbacks(new RelayCommandCallback());
-
-  statusChar = pService->createCharacteristic(
-    CHAR_STATUS_UUID,
-    NIMBLE_PROPERTY::NOTIFY
-  );
-
-  pService->start();
-  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->start();
+  // Start BluetoothSerial task on Core 1
+  xTaskCreatePinnedToCore(BTTask,"BTTask",4096,NULL,1,NULL,1);
 }
 
 // ===== Loop =====
@@ -281,36 +261,21 @@ void loop() {
   if(millis() - lastRelayPublish >= 5000){
     publishRelay(relayIndex);
     relayIndex++;
-    if(relayIndex >= NUM_RELAYS) relayIndex = 0;
+    if(relayIndex>=NUM_RELAYS) relayIndex=0;
     lastRelayPublish = millis();
-    lastWiFiReport = millis(); // schedule WiFi report 2 sec after relay
+    lastWiFiReport = millis();
   }
 
-  // Publish full status every 30 sec
-  if(millis() - lastFullPublish >= 30000){
-    publishAllRelays();
-    lastFullPublish = millis();
-  }
-
-  // WiFi info 2 sec after relay publish
-  if(millis() - lastWiFiReport >= 2000 && WiFi.status() == WL_CONNECTED){
+  // WiFi info 2 sec after relay
+  if(millis() - lastWiFiReport >= 2000 && WiFi.status()==WL_CONNECTED){
     StaticJsonDocument<128> doc;
     doc["wifi_name"] = WiFi.SSID();
     doc["wifi_rssi"] = WiFi.RSSI();
-
     char payload[128];
-    serializeJson(doc, payload);
-    client.publish("home/esp32/wifi_status", payload);
-    statusChar->setValue(payload);
-    statusChar->notify();
-    lastWiFiReport = millis() + 1000000; // prevent repeated until next relay
-  }
-
-  struct tm timeinfo;
-  if(getLocalTime(&timeinfo)){
-    if(timeinfo.tm_hour == 0 && timeinfo.tm_min == 0 && timeinfo.tm_sec < 5){
-      for(int i = 0; i < NUM_RELAYS; i++) relayUsageToday[i] = 0;
-    }
+    serializeJson(doc,payload);
+    client.publish("home/esp32/wifi_status",payload);
+    if(btStarted) BTSerial.println(payload);
+    lastWiFiReport = millis() + 1000000; // wait until next relay
   }
 
   delay(100);
