@@ -47,10 +47,10 @@ jobs:
 
           # Download latest NimBLE-Arduino release zip
           mkdir -p /tmp/nimble
-          curl -L https://github.com/h2zero/NimBLE-Arduino/releases/latest/download/NimBLE-Arduino.zip -o /tmp/nimble/NimBLE-Arduino.zip
+          curl -L https://github.com/h2zero/NimBLE-Arduino/releases/latest/download/NimBLE-Arduino.zip -o /tmp/nimble/NimBLE-Arduino
 
           # Unzip & install locally
-          unzip /tmp/nimble/NimBLE-Arduino.zip -d /tmp/nimble/
+          unzip /tmp/nimble/NimBLE-Arduino -d /tmp/nimble/
           arduino-cli lib install /tmp/nimble/NimBLE-Arduino
 
       # -------------------------
