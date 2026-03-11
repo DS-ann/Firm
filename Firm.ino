@@ -3,9 +3,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
+#include <BluetoothSerial.h>
 #include <time.h>
 
 // ===== WiFi =====
@@ -27,6 +25,7 @@ const char* mqttWifiTopic    = "home/esp32/wifi_status";
 // ===== Relays =====
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
+
 bool relayState[NUM_RELAYS];
 unsigned long relayTimers[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
@@ -38,76 +37,30 @@ unsigned long relayStartTime[NUM_RELAYS];
 WiFiClientSecure espClient;
 PubSubClient client(espClient);
 Preferences prefs;
+BluetoothSerial SerialBT;
 
 // ===== Timers =====
 unsigned long lastRelayPublish = 0;
 unsigned long lastWiFiReport = 0;
 unsigned long lastMQTTCheck = 0;
+
 int relayIndex = 0;
+bool btRunning = false;
 
 // ===== Device ID =====
-String getDeviceID() {
-  String id = "esp32_" + String((uint64_t)ESP.getEfuseMac(), HEX);
+String getDeviceID(){
+  String id = "esp32_" + String((uint64_t)ESP.getEfuseMac(),HEX);
   id.toLowerCase();
   return id;
 }
 
-// ===== BLE =====
-BLEServer* pServer = nullptr;
-BLECharacteristic* pCharacteristic = nullptr;
-bool bleConnected = false;
-
-#define SERVICE_UUID        "12345678-1234-1234-1234-1234567890ab"
-#define CHARACTERISTIC_UUID "87654321-4321-4321-4321-ba0987654321"
-
 // ===== WiFi Event =====
 void WiFiEvent(WiFiEvent_t event){
-  switch(event){
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.println("WiFi lost -> reconnecting");
-      WiFi.reconnect();
-    break;
-    default:
-    break;
+  if(event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED){
+    Serial.println("WiFi lost -> reconnecting");
+    WiFi.reconnect();
   }
 }
-
-// ===== BLE Server =====
-class MyServerCallbacks: public BLEServerCallbacks {
-  void onConnect(BLEServer* pServer){ bleConnected = true; }
-  void onDisconnect(BLEServer* pServer){ bleConnected = false; }
-};
-
-// ===== BLE Write =====
-class MyCallbacks: public BLECharacteristicCallbacks {
-
-  void onWrite(BLECharacteristic* pCharacteristic){
-
-    String rxValue = pCharacteristic->getValue();
-
-    if(rxValue.length()>0){
-
-      StaticJsonDocument<128> doc;
-
-      if(!deserializeJson(doc, rxValue)){
-
-        int id = doc["r"];
-        bool state = doc["s"];
-        unsigned long timer = doc["t"];
-
-        if(id>=0 && id<NUM_RELAYS){
-
-          setRelay(id,state);
-
-          if(timer>0){
-            relayEndTime[id]=millis()+timer*1000;
-            relayTimers[id]=timer*1000;
-          }
-        }
-      }
-    }
-  }
-};
 
 // ===== WiFi Connect =====
 void connectWiFi(){
@@ -118,9 +71,9 @@ void connectWiFi(){
 
   for(int i=0;i<NUM_WIFI;i++){
 
-    WiFi.begin(ssidList[i], passwordList[i]);
+    WiFi.begin(ssidList[i],passwordList[i]);
 
-    unsigned long start=millis();
+    unsigned long start = millis();
 
     while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
       delay(200);
@@ -138,20 +91,20 @@ void connectWiFi(){
   Serial.println("WiFi failed");
 }
 
-// ===== Relay =====
+// ===== Relay Control =====
 void setRelay(int id,bool state){
 
   if(id<0 || id>=NUM_RELAYS) return;
 
-  if(state && !relayState[id]) relayStartTime[id]=millis();
+  if(state && !relayState[id]) relayStartTime[id] = millis();
 
   if(!state && relayState[id]){
-    unsigned long dur=millis()-relayStartTime[id];
+    unsigned long dur = millis() - relayStartTime[id];
     relayUsageTotal[id]+=dur;
     relayUsageToday[id]+=dur;
   }
 
-  relayState[id]=state;
+  relayState[id] = state;
 
   digitalWrite(relayPins[id],state?LOW:HIGH);
 
@@ -160,10 +113,10 @@ void setRelay(int id,bool state){
   prefs.putBool(key,state);
 }
 
-// ===== Timer =====
+// ===== Timer check =====
 void checkTimers(){
 
-  unsigned long now=millis();
+  unsigned long now = millis();
 
   for(int i=0;i<NUM_RELAYS;i++){
 
@@ -172,13 +125,14 @@ void checkTimers(){
       relayEndTime[i]=0;
       relayTimers[i]=0;
     }
+
     else if(relayEndTime[i]>now){
-      relayTimers[i]=relayEndTime[i]-now;
+      relayTimers[i] = relayEndTime[i]-now;
     }
   }
 }
 
-// ===== Publish =====
+// ===== Publish relay =====
 void publishRelay(int id){
 
   if(client.connected() && WiFi.status()==WL_CONNECTED){
@@ -197,18 +151,17 @@ void publishRelay(int id){
     client.publish(mqttUpdateTopic,buf);
   }
 
-  if(bleConnected){
+  if(btRunning){
 
-    StaticJsonDocument<64> docBT;
+    StaticJsonDocument<64> doc;
 
-    docBT["r"]=id;
-    docBT["s"]=relayState[id]?1:0;
+    doc["r"]=id;
+    doc["s"]=relayState[id]?1:0;
 
     char buf[64];
-    serializeJson(docBT,buf);
+    serializeJson(doc,buf);
 
-    pCharacteristic->setValue(buf);
-    pCharacteristic->notify();
+    SerialBT.println(buf);
   }
 }
 
@@ -219,17 +172,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 
   if(deserializeJson(doc,payload,len)) return;
 
-  int id=doc["r"];
-  bool state=doc["s"];
-  unsigned long timer=doc["t"];
+  int id = doc["r"];
+  bool state = doc["s"];
+  int timer = doc["t"];
 
   if(id>=0 && id<NUM_RELAYS){
 
     setRelay(id,state);
 
     if(timer>0){
-      relayEndTime[id]=millis()+timer*1000;
-      relayTimers[id]=timer*1000;
+      relayEndTime[id] = millis()+timer*1000;
+      relayTimers[id] = timer*1000;
     }
 
     publishRelay(id);
@@ -239,7 +192,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 // ===== MQTT Connect =====
 bool connectMQTT(){
 
-  String devID=getDeviceID();
+  String devID = getDeviceID();
 
   espClient.setInsecure();
 
@@ -261,32 +214,59 @@ bool connectMQTT(){
   return false;
 }
 
-// ===== BLE Task =====
-void BLETask(void* param){
+// ===== Bluetooth start =====
+void startBT(){
 
-  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+  if(btRunning) return;
 
-  BLEDevice::init("RanjanaSmartHome");
+  SerialBT.begin("RanjanaSmartHome");
 
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+  btRunning = true;
 
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+  Serial.println("Bluetooth started");
+}
 
-  pCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID,
-    BLECharacteristic::PROPERTY_READ |
-    BLECharacteristic::PROPERTY_WRITE |
-    BLECharacteristic::PROPERTY_NOTIFY
-  );
+// ===== Bluetooth stop =====
+void stopBT(){
 
-  pCharacteristic->setCallbacks(new MyCallbacks());
+  if(!btRunning) return;
 
-  pService->start();
-  pServer->getAdvertising()->start();
+  SerialBT.end();
 
-  while(true){
-    vTaskDelay(100/portTICK_PERIOD_MS);
+  btRunning = false;
+
+  Serial.println("Bluetooth stopped");
+}
+
+// ===== Bluetooth commands =====
+void handleBluetooth(){
+
+  if(!btRunning) return;
+
+  if(SerialBT.available()){
+
+    String data = SerialBT.readStringUntil('\n');
+
+    StaticJsonDocument<128> doc;
+
+    if(!deserializeJson(doc,data)){
+
+      int id = doc["r"];
+      bool state = doc["s"];
+      int timer = doc["t"];
+
+      if(id>=0 && id<NUM_RELAYS){
+
+        setRelay(id,state);
+
+        if(timer>0){
+          relayEndTime[id]=millis()+timer*1000;
+          relayTimers[id]=timer*1000;
+        }
+
+        publishRelay(id);
+      }
+    }
   }
 }
 
@@ -307,16 +287,24 @@ void setup(){
   configTime(19800,0,"pool.ntp.org","time.nist.gov");
 
   connectMQTT();
-
-  xTaskCreatePinnedToCore(BLETask,"BLETask",10000,NULL,1,NULL,1);
 }
 
 // ===== Loop =====
 void loop(){
 
+  // MQTT / Bluetooth switching
+  if(client.connected()){
+    if(btRunning) stopBT();
+  }
+  else{
+    if(!btRunning) startBT();
+  }
+
+  handleBluetooth();
+
   if(WiFi.status()==WL_CONNECTED && !client.connected() && millis()-lastMQTTCheck>5000){
     connectMQTT();
-    lastMQTTCheck=millis();
+    lastMQTTCheck = millis();
   }
 
   if(client.connected()) client.loop();
@@ -328,9 +316,10 @@ void loop(){
     publishRelay(relayIndex);
 
     relayIndex++;
+
     if(relayIndex>=NUM_RELAYS) relayIndex=0;
 
-    lastRelayPublish=millis();
+    lastRelayPublish = millis();
   }
 
   if(millis()-lastWiFiReport>=20000 && WiFi.status()==WL_CONNECTED){
@@ -345,7 +334,7 @@ void loop(){
 
     client.publish(mqttWifiTopic,buf);
 
-    lastWiFiReport=millis();
+    lastWiFiReport = millis();
   }
 
   delay(100);
