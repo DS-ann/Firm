@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Force Node.js 24 for actions
 
 jobs:
   build:
@@ -40,11 +40,7 @@ jobs:
       # -------------------------
       - name: Install required libraries
         run: |
-          mkdir -p /tmp/nimble
-          cd /tmp/nimble
-          curl -L -o NimBLE-Arduino-2.3.9.zip https://github.com/h2zero/NimBLE-Arduino/archive/refs/tags/2.3.9.zip
-          arduino-cli lib install NimBLE-Arduino-2.3.9.zip
-          for lib in "ArduinoJson" "PubSubClient" "Preferences" "ArduinoWebsockets"; do
+          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences" ; do
             arduino-cli lib install "$lib"
           done
 
