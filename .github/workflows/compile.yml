@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Force Node.js 24 for actions
 
 jobs:
   build:
@@ -40,13 +40,19 @@ jobs:
       # -------------------------
       - name: Install required libraries
         run: |
-          # Standard libraries
+          # Standard libraries from Arduino Index
           for lib in "ArduinoJson" "PubSubClient" "Preferences"; do
             arduino-cli lib install "$lib"
           done
 
-          # BLE library via GitHub URL (latest NimBLE-Arduino releases)
-          arduino-cli lib install "https://github.com/h2zero/NimBLE-Arduino/archive/refs/heads/main.zip"
+          # Download NimBLE-Arduino source
+          mkdir -p libs/NimBLE-Arduino
+          curl -L https://github.com/h2zero/NimBLE-Arduino/archive/refs/heads/main.zip --output nimble.zip
+          unzip nimble.zip -d libs/
+          mv libs/NimBLE-Arduino-main libs/NimBLE-Arduino
+
+          # Install locally
+          arduino-cli lib install libs/NimBLE-Arduino
 
       # -------------------------
       # Compile firmware
@@ -68,7 +74,7 @@ jobs:
           cp build/*.bin firmware/
 
       # -------------------------
-      # Upload firmware artifact
+      # Upload firmware as artifact
       # -------------------------
       - name: Upload firmware
         uses: actions/upload-artifact@v5
