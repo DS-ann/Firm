@@ -1,4 +1,3 @@
-
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
@@ -56,8 +55,8 @@ String getDeviceID() {
 }
 
 // ===== Bluetooth Serial =====
-BluetoothSerial BTSerial;
-bool btStarted = false;
+BluetoothSerial MyBTSerial;
+bool bluetoothReady = false;  // <-- renamed flag to avoid conflicts
 
 // ===== WiFi connect =====
 void connectWiFi() {
@@ -102,13 +101,13 @@ void publishRelay(int id) {
     client.publish(mqttUpdateTopic, payload);
   }
 
-  if(btStarted){
+  if(bluetoothReady){
     StaticJsonDocument<128> docBT;
     docBT["relay"] = id;
     docBT["state"] = relayState[id];
     char buf[128];
     serializeJson(docBT, buf);
-    BTSerial.println(buf);
+    MyBTSerial.println(buf);
   }
 
   Serial.print("Relay update: "); Serial.println(relayState[id]);
@@ -162,7 +161,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       relayEndTime[relayID] = millis() + timerSec*1000;
       relayTimers[relayID] = timerSec*1000;
     }
-    publishRelay(relayID); // Sync to Bluetooth
+    publishRelay(relayID);
   }
 }
 
@@ -185,22 +184,22 @@ bool connectMQTT() {
   return false;
 }
 
-// ===== Bluetooth Serial Task (Core 1) =====
+// ===== Bluetooth Task (Core 0) =====
 void BTTask(void* parameter){
-  delay(60000); // wait 1 min
-  BTSerial.begin("RanjanaSmartHome");
-  btStarted = true;
+  delay(60000); // wait 1 min after boot
+  MyBTSerial.begin("RanjanaSmartHome");
+  bluetoothReady = true;
   Serial.println("Bluetooth Serial started.");
 
   while(true){
-    if(BTSerial.available()){
-      String cmd = BTSerial.readStringUntil('\n');
+    if(MyBTSerial.available()){
+      String cmd = MyBTSerial.readStringUntil('\n');
       if(cmd.length() >= 2){
         int relay = cmd[0] - '0';
         int state = cmd[1] - '0';
         if(relay >=0 && relay < NUM_RELAYS){
           setRelay(relay,state);
-          publishRelay(relay); // sync MQTT
+          publishRelay(relay);
         }
       }
     }
@@ -233,8 +232,8 @@ void setup() {
   configTime(19800,0,"pool.ntp.org","time.nist.gov");
   connectMQTT();
 
-  // Start BluetoothSerial task on Core 1
-  xTaskCreatePinnedToCore(BTTask,"BTTask",4096,NULL,1,NULL,1);
+  // Start Bluetooth Task on Core 0
+  xTaskCreatePinnedToCore(BTTask,"BTTask",4096,NULL,1,NULL,0);
 }
 
 // ===== Loop =====
@@ -273,7 +272,7 @@ void loop() {
     char payload[128];
     serializeJson(doc,payload);
     client.publish("home/esp32/wifi_status",payload);
-    if(btStarted) BTSerial.println(payload);
+    if(bluetoothReady) MyBTSerial.println(payload);
     lastWiFiReport = millis() + 1000000; // wait until next relay
   }
 
