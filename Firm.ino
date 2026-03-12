@@ -133,6 +133,7 @@ bool connectMQTT(){
     mqtt.subscribe(topicCmd);
     mqtt.publish(topicWelcome,"ESP32 online",true);
 
+    // Publish all relay states + wifi info
     for(int i=0;i<NUM_RELAYS;i++){
       relayTimers[i]=relayEndTime[i]>millis()?relayEndTime[i]-millis():0;
       jsonRelayDoc.clear();
@@ -242,12 +243,27 @@ void setup(){
     pinMode(relayPins[i],OUTPUT);
     digitalWrite(relayPins[i],HIGH);
   }
+
   prefs.begin("relay",false);
 
-  // Publish last saved relay states immediately
+  // Read last saved relay states and publish immediately
   for(int i=0;i<NUM_RELAYS;i++){
-    relayState[i]=prefs.getBool(String("r")+i, false);
+    char key[10];
+    sprintf(key,"r%d",i);
+    relayState[i]=prefs.getBool(key,false);
     if(relayState[i]) relayStartTime[i]=millis();
+    // Publish startup state
+    jsonRelayDoc.clear();
+    jsonRelayDoc["r"]=i;
+    jsonRelayDoc["s"]=relayState[i]?1:0;
+    jsonRelayDoc["t"]=0;
+    jsonRelayDoc["ut"]=relayUsageTotal[i]/60000;
+    jsonRelayDoc["ud"]=relayUsageToday[i]/60000;
+    jsonRelayDoc["wifi"]=WiFi.SSID();
+    jsonRelayDoc["rssi"]=WiFi.RSSI();
+    char buf[256];
+    serializeJson(jsonRelayDoc,buf);
+    if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
   }
 }
 
@@ -257,14 +273,15 @@ void loop(){
   static unsigned long lastWiFiCheck=0;
   static bool btMode=false;
 
+  unsigned long now=millis();
+
   // ---------------- WIFI / BT AUTOMATION ----------------
-  if(millis()-lastWiFiCheck>2000){
-    lastWiFiCheck=millis();
+  if(now-lastWiFiCheck>2000){
+    lastWiFiCheck=now;
     if(WiFi.status()!=WL_CONNECTED){
       stopBT();
       if(!btMode){
-        delay(2000);
-        startBT();
+        startBT();   // delay handled inside start/stopBT logic if needed
         btMode=true;
       }
     } else {
@@ -278,9 +295,9 @@ void loop(){
   }
 
   if(WiFi.status()==WL_CONNECTED){
-    if(!mqtt.connected() && millis()-lastMQTTRetry>5000){
+    if(!mqtt.connected() && now-lastMQTTRetry>5000){
       connectMQTT();
-      lastMQTTRetry=millis();
+      lastMQTTRetry=now;
     }
     mqtt.loop();
   }
@@ -289,13 +306,13 @@ void loop(){
   resetDailyUsage();
 
   // Send relay status every 5 minutes, one by one
-  if(millis()-lastStatus>300000){
+  if(now-lastStatus>300000){
     for(int i=0;i<NUM_RELAYS;i++){
       timerIndex=i;
       publishTimerStat();
       delay(50);
     }
-    lastStatus=millis();
+    lastStatus=now;
   }
 
   delay(50);
