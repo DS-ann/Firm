@@ -39,9 +39,9 @@ bool lastSwitchState=HIGH;
 unsigned long lastSwitchTime=0;
 
 // ---------------- LEDS ----------------
-#define LED_WIFI 2      // WiFi mode LED
-#define LED_MQTT 15     // MQTT connected LED
-#define LED_BT 14       // Bluetooth mode LED
+#define LED_WIFI 25      // WiFi mode LED
+#define LED_MQTT 26     // MQTT connected LED
+#define LED_BT 27       // Bluetooth mode LED
 
 // ---------------- SYSTEM ----------------
 WiFiClientSecure espClient;
@@ -351,3 +351,4 @@ void loop(){
 
   delay(50);
 }
+
