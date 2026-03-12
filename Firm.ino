@@ -1,190 +1,237 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
-#include <BluetoothSerial.h>
+#include <WiFiClientSecure.h>
 #include <Preferences.h>
+#include <BluetoothSerial.h>
 
+// ---------------- WIFI ----------------
+#define NUM_WIFI 4
+const char* ssidList[NUM_WIFI]={"Lenovo","vivo Y15s","POCO5956","TPLink"};
+const char* passwordList[NUM_WIFI]={"debarghya","debarghya1","debarghya2","pass2"};
+
+// ---------------- MQTT ----------------
+const char* mqttServer="5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
+const int mqttPort=8883;
+const char* mqttUser="Debarghya_Sannigrahi";
+const char* mqttPassword="Dsann#5956";
+
+const char* topicCmd="home/esp32/commands";
+const char* topicUpdate="home/esp32/update";
+
+// ---------------- RELAYS ----------------
 #define NUM_RELAYS 8
+const int relayPins[NUM_RELAYS]={13,4,5,18,19,21,22,23};
 
-int relayPins[NUM_RELAYS]={13,4,5,18,19,21,22,23};
+bool relayState[NUM_RELAYS];
+unsigned long usageDaily[NUM_RELAYS];
+unsigned long usageTotal[NUM_RELAYS];
 
+// ---------------- LED ----------------
 #define LED_WIFI 25
 #define LED_MQTT 26
 #define LED_BT 27
+
+// ---------------- SWITCH ----------------
 #define SWITCH_PIN 33
 
-const char* ssid="YOUR_WIFI";
-const char* pass="YOUR_PASS";
-
-const char* mqtt_server="192.168.1.100";
-
-WiFiClient espClient;
+// ---------------- OBJECTS ----------------
+WiFiClientSecure espClient;
 PubSubClient mqtt(espClient);
-
 BluetoothSerial SerialBT;
 Preferences prefs;
 
-bool relayState[NUM_RELAYS];
-
-unsigned long relayTimerEnd[NUM_RELAYS];
-
-unsigned long relayUsageTotal[NUM_RELAYS];
-unsigned long relayUsageDaily[NUM_RELAYS];
-
-unsigned long lastMinuteTick=0;
-unsigned long lastStatusSend=0;
+// ---------------- TIMERS ----------------
+unsigned long lastStateSend=0;
 unsigned long lastUsageSend=0;
 
-bool wifiConnected=false;
-bool mqttConnected=false;
-bool btClient=false;
+unsigned long mqttConnectedTime=0;
+unsigned long btConnectedTime=0;
 
-void saveState(){
+bool mqttSyncDone=false;
+bool btSyncDone=false;
 
-prefs.begin("relay",false);
+// ---------------- TIMER SYSTEM ----------------
+unsigned long relayTimer[NUM_RELAYS];
+unsigned long relayStart[NUM_RELAYS];
 
-for(int i=0;i<NUM_RELAYS;i++){
+// ---------------- STARTUP LED ----------------
+void startupAnimation(){
 
-prefs.putBool(("s"+String(i)).c_str(),relayState[i]);
+for(int i=0;i<4;i++){
 
-long rem=0;
-if(relayTimerEnd[i]>millis())
-rem=relayTimerEnd[i]-millis();
+digitalWrite(LED_WIFI,HIGH);
+delay(120);
+digitalWrite(LED_WIFI,LOW);
 
-prefs.putLong(("t"+String(i)).c_str(),rem);
+digitalWrite(LED_MQTT,HIGH);
+delay(120);
+digitalWrite(LED_MQTT,LOW);
 
-prefs.putULong(("u"+String(i)).c_str(),relayUsageTotal[i]);
-prefs.putULong(("d"+String(i)).c_str(),relayUsageDaily[i]);
-
-}
-
-prefs.end();
-
-}
-
-void loadState(){
-
-prefs.begin("relay",true);
-
-for(int i=0;i<NUM_RELAYS;i++){
-
-relayState[i]=prefs.getBool(("s"+String(i)).c_str(),0);
-
-relayUsageTotal[i]=prefs.getULong(("u"+String(i)).c_str(),0);
-relayUsageDaily[i]=prefs.getULong(("d"+String(i)).c_str(),0);
-
-long rem=prefs.getLong(("t"+String(i)).c_str(),0);
-
-if(rem>0)
-relayTimerEnd[i]=millis()+rem;
-else
-relayTimerEnd[i]=0;
+digitalWrite(LED_BT,HIGH);
+delay(120);
+digitalWrite(LED_BT,LOW);
 
 }
 
-prefs.end();
+}
+
+// ---------------- WIFI CONNECT ----------------
+bool connectWiFi(){
+
+Serial.println("Scanning WiFi");
+
+int n=WiFi.scanNetworks();
+
+int bestIndex=-1;
+int bestRSSI=-999;
+
+for(int i=0;i<n;i++){
+
+String found=WiFi.SSID(i);
+
+for(int j=0;j<NUM_WIFI;j++){
+
+if(found==ssidList[j]){
+
+if(WiFi.RSSI(i)>bestRSSI){
+
+bestRSSI=WiFi.RSSI(i);
+bestIndex=j;
 
 }
 
+}
+
+}
+
+}
+
+if(bestIndex==-1) return false;
+
+Serial.print("Connecting to ");
+Serial.println(ssidList[bestIndex]);
+
+WiFi.begin(ssidList[bestIndex],passwordList[bestIndex]);
+
+unsigned long start=millis();
+
+while(WiFi.status()!=WL_CONNECTED && millis()-start<15000){
+
+delay(300);
+
+}
+
+return WiFi.status()==WL_CONNECTED;
+
+}
+
+// ---------------- MQTT CONNECT ----------------
+bool connectMQTT(){
+
+espClient.setInsecure();
+
+mqtt.setServer(mqttServer,mqttPort);
+
+if(mqtt.connect("ESP32Smart",mqttUser,mqttPassword)){
+
+mqtt.subscribe(topicCmd);
+
+Serial.println("MQTT connected");
+
+digitalWrite(LED_MQTT,HIGH);
+
+mqttConnectedTime=millis();
+mqttSyncDone=false;
+
+return true;
+
+}
+
+return false;
+
+}
+
+// ---------------- RELAY CONTROL ----------------
 void setRelay(int r,bool s){
 
 relayState[r]=s;
 
 digitalWrite(relayPins[r],s?LOW:HIGH);
 
-saveState();
-
-String msg="U"+String(r+1)+String(s);
-
-if(mqttConnected)
-mqtt.publish("home/status",msg.c_str());
-
-if(btClient)
-SerialBT.println(msg);
+if(s) relayStart[r]=millis();
 
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int len){
+// ---------------- MQTT COMMAND ----------------
+void mqttCallback(char* topic, byte* payload, unsigned int length){
 
-String cmd="";
+if(length<3) return;
 
-for(int i=0;i<len;i++)
-cmd+=(char)payload[i];
-
-handleCommand(cmd);
-
-}
-
-void handleCommand(String cmd){
-
-if(cmd[0]=='R'){
-
-int r=cmd[1]-'1';
-int s=cmd[2]-'0';
+int r=payload[1]-'0';
+bool s=payload[2]=='1';
 
 setRelay(r,s);
 
 }
 
-if(cmd[0]=='T'){
+// ---------------- SEND STATE ----------------
+void sendStateMQTT(){
 
-int r=cmd[1]-'1';
-int m=cmd.substring(2).toInt();
+String msg="S";
 
-setRelay(r,1);
+for(int i=0;i<NUM_RELAYS;i++) msg+=relayState[i];
 
-relayTimerEnd[r]=millis()+m*60000;
+msg+="W";
+msg+=(WiFi.status()==WL_CONNECTED);
 
-saveState();
-
-}
-
-}
-
-void connectWiFi(){
-
-if(WiFi.status()==WL_CONNECTED){
-wifiConnected=true;
-return;
-}
-
-digitalWrite(LED_WIFI,LOW);
-
-WiFi.begin(ssid,pass);
-
-while(WiFi.status()!=WL_CONNECTED){
-delay(500);
-digitalWrite(LED_WIFI,!digitalRead(LED_WIFI));
-}
-
-wifiConnected=true;
-digitalWrite(LED_WIFI,HIGH);
+mqtt.publish(topicUpdate,msg.c_str());
 
 }
 
-void connectMQTT(){
+void sendStateBT(){
 
-mqtt.setServer(mqtt_server,1883);
-mqtt.setCallback(mqttCallback);
+String msg="S";
 
-while(!mqtt.connected()){
+for(int i=0;i<NUM_RELAYS;i++) msg+=relayState[i];
 
-digitalWrite(LED_MQTT,!digitalRead(LED_MQTT));
-
-if(mqtt.connect("esp32home")){
-
-mqtt.subscribe("home/cmd");
-
-mqttConnected=true;
-digitalWrite(LED_MQTT,HIGH);
+SerialBT.println(msg);
 
 }
 
-delay(1000);
+// ---------------- SEND USAGE ----------------
+void sendUsageMQTT(){
+
+String msg="U";
+
+for(int i=0;i<NUM_RELAYS;i++){
+
+msg+=usageDaily[i];
+msg+=",";
+msg+=usageTotal[i];
+msg+=",";
+}
+
+mqtt.publish(topicUpdate,msg.c_str());
 
 }
 
+void sendUsageBT(){
+
+String msg="U";
+
+for(int i=0;i<NUM_RELAYS;i++){
+
+msg+=usageDaily[i];
+msg+=",";
+msg+=usageTotal[i];
+msg+=",";
 }
 
+SerialBT.println(msg);
+
+}
+
+// ---------------- SETUP ----------------
 void setup(){
 
 Serial.begin(115200);
@@ -202,140 +249,102 @@ digitalWrite(relayPins[i],HIGH);
 
 }
 
-loadState();
+startupAnimation();
 
-for(int i=0;i<NUM_RELAYS;i++)
-digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
-
-SerialBT.begin("SmartHome");
+WiFi.mode(WIFI_STA);
 
 connectWiFi();
+
+if(WiFi.status()==WL_CONNECTED){
+
+digitalWrite(LED_WIFI,HIGH);
+
+mqtt.setCallback(mqttCallback);
+
 connectMQTT();
 
 }
 
+SerialBT.begin("RanjanaSmartHome");
+
+}
+
+// ---------------- LOOP ----------------
 void loop(){
 
-if(WiFi.status()!=WL_CONNECTED){
+// WIFI LED
+if(WiFi.status()==WL_CONNECTED) digitalWrite(LED_WIFI,HIGH);
+else digitalWrite(LED_WIFI,millis()/300%2);
 
-wifiConnected=false;
-connectWiFi();
+// MQTT reconnect
+if(WiFi.status()==WL_CONNECTED && !mqtt.connected()){
 
-}
+digitalWrite(LED_MQTT,millis()/300%2);
 
-if(!mqtt.connected()){
-
-mqttConnected=false;
 connectMQTT();
 
 }
 
-mqtt.loop();
+if(mqtt.connected()) mqtt.loop();
 
-if(SerialBT.hasClient())
-btClient=true;
-else
-btClient=false;
+// BLUETOOTH LED
+if(SerialBT.hasClient()) digitalWrite(LED_BT,HIGH);
+else digitalWrite(LED_BT,millis()/400%2);
 
-if(btClient)
-digitalWrite(LED_BT,HIGH);
-else
-digitalWrite(LED_BT,(millis()/500)%2);
+// ---------------- MQTT INITIAL SYNC ----------------
+if(mqtt.connected() && !mqttSyncDone){
 
-if(SerialBT.available()){
+if(millis()-mqttConnectedTime>3000){
 
-String cmd=SerialBT.readStringUntil('\n');
-cmd.trim();
+sendStateMQTT();
+sendUsageMQTT();
 
-handleCommand(cmd);
-
-}
-
-for(int i=0;i<NUM_RELAYS;i++){
-
-if(relayTimerEnd[i]>0 && millis()>relayTimerEnd[i]){
-
-setRelay(i,0);
-
-relayTimerEnd[i]=0;
-
-saveState();
+mqttSyncDone=true;
 
 }
 
 }
 
-if(millis()-lastMinuteTick>60000){
+// ---------------- BLUETOOTH INITIAL SYNC ----------------
+if(SerialBT.hasClient() && !btSyncDone){
 
-lastMinuteTick=millis();
+if(btConnectedTime==0) btConnectedTime=millis();
 
-for(int i=0;i<NUM_RELAYS;i++){
+if(millis()-btConnectedTime>3000){
 
-if(relayState[i]){
+sendStateBT();
+sendUsageBT();
 
-relayUsageTotal[i]++;
-relayUsageDaily[i]++;
-
-}
-
-}
+btSyncDone=true;
 
 }
 
-if(millis()-lastStatusSend>60000){
+}
 
-lastStatusSend=millis();
+if(!SerialBT.hasClient()){
 
-String msg="S";
-
-for(int i=0;i<NUM_RELAYS;i++)
-msg+=relayState[i]?"1":"0";
-
-msg+="T";
-
-for(int i=0;i<NUM_RELAYS;i++){
-
-int m=0;
-
-if(relayTimerEnd[i]>millis())
-m=(relayTimerEnd[i]-millis())/60000;
-
-msg+=String(m);
+btConnectedTime=0;
+btSyncDone=false;
 
 }
 
-msg+="W";
-msg+=wifiConnected?"1":"0";
+// ---------------- PERIODIC STATE ----------------
+if(millis()-lastStateSend>60000){
 
-if(mqttConnected)
-mqtt.publish("home/status",msg.c_str());
+sendStateMQTT();
+sendStateBT();
 
-if(btClient)
-SerialBT.println(msg);
+lastStateSend=millis();
 
 }
 
+// ---------------- PERIODIC USAGE ----------------
 if(millis()-lastUsageSend>300000){
 
+sendUsageMQTT();
+sendUsageBT();
+
 lastUsageSend=millis();
-
-String msg="U";
-
-for(int i=0;i<NUM_RELAYS;i++)
-msg+=relayUsageDaily[i];
-
-msg+="t";
-
-for(int i=0;i<NUM_RELAYS;i++)
-msg+=relayUsageTotal[i];
-
-if(mqttConnected)
-mqtt.publish("home/status",msg.c_str());
-
-if(btClient)
-SerialBT.println(msg);
-
-saveState();
 
 }
 
