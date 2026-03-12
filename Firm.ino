@@ -25,7 +25,6 @@ const char* topicWifi="home/esp32/wifi_status";
 // ---------------- RELAYS ----------------
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS]={13,4,5,18,19,21,22,23};
-
 bool relayState[NUM_RELAYS];
 unsigned long relayTimers[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
@@ -35,15 +34,14 @@ unsigned long relayStartTime[NUM_RELAYS];
 
 // ---------------- SWITCH ----------------
 #define SWITCH_PIN 33
-bool wifiMode = true;
-bool lastSwitchState = HIGH;
-bool switchRequest = false;
-bool targetWiFiMode = true;
+bool wifiMode=true; // initial mode WiFi
+bool lastSwitchState=HIGH;
+unsigned long lastSwitchTime=0;
 
-// ---------------- STATUS LEDs ----------------
-#define LED_WIFI 25
-#define LED_MQTT 26
-#define LED_BT 27
+// ---------------- LEDS ----------------
+#define LED_WIFI 2      // WiFi mode LED
+#define LED_MQTT 15     // MQTT connected LED
+#define LED_BT 14       // Bluetooth mode LED
 
 // ---------------- SYSTEM ----------------
 WiFiClientSecure espClient;
@@ -53,14 +51,18 @@ Preferences prefs;
 
 unsigned long lastMQTTRetry=0;
 unsigned long lastTimerCheck=0;
-unsigned long timerIndex=0;
+unsigned long lastStatusSend=0;
+unsigned long lastBTSend=0;
+unsigned long lastWiFiSend=0;
+int timerIndex=0;
 int lastDay=-1;
 
-// Pre-allocated JSON documents
+// ---------------- JSON ----------------
 StaticJsonDocument<256> jsonRelayDoc;
 StaticJsonDocument<128> jsonTimerDoc;
+StaticJsonDocument<128> jsonWiFiDoc;
 
-// ---------------- DEVICE ID ----------------
+// ---------------- DEVICE ----------------
 String getDeviceID(){
   uint64_t chipid=ESP.getEfuseMac();
   char id[20];
@@ -71,8 +73,7 @@ String getDeviceID(){
 // ---------------- RELAY CONTROL ----------------
 void setRelay(int id,bool state){
   if(id<0 || id>=NUM_RELAYS) return;
-
-  bool changed = (relayState[id] != state);
+  bool changed=(relayState[id]!=state);
 
   if(state && !relayState[id]) relayStartTime[id]=millis();
   if(!state && relayState[id]){
@@ -141,6 +142,21 @@ bool connectMQTT(){
   if(mqtt.connect(id.c_str(),mqttUser,mqttPassword)){
     mqtt.subscribe(topicCmd);
     mqtt.publish(topicWelcome,"ESP32 online",true);
+
+    // Delay 3s then send full relay states
+    delay(3000);
+    for(int i=0;i<NUM_RELAYS;i++){
+      relayTimers[i]=relayEndTime[i]>millis()?relayEndTime[i]-millis():0;
+      jsonRelayDoc.clear();
+      jsonRelayDoc["r"]=i;
+      jsonRelayDoc["s"]=relayState[i]?1:0;
+      jsonRelayDoc["t"]=relayTimers[i]/1000;
+      jsonRelayDoc["ut"]=relayUsageTotal[i]/60000;
+      jsonRelayDoc["ud"]=relayUsageToday[i]/60000;
+      char buf[256];
+      serializeJson(jsonRelayDoc,buf);
+      mqtt.publish(topicUpdate,buf);
+    }
     return true;
   }
   return false;
@@ -174,13 +190,9 @@ bool connectWiFi(){
 
   WiFi.begin(ssidList[bestSSID],passwordList[bestSSID]);
   unsigned long start=millis();
-  while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
-    digitalWrite(LED_WIFI, millis() % 500 < 250 ? HIGH : LOW); // blink while connecting
-    delay(50);
-  }
+  while(WiFi.status()!=WL_CONNECTED && millis()-start<10000) delay(200);
 
-  digitalWrite(LED_WIFI, WiFi.status()==WL_CONNECTED ? HIGH : LOW);
-  return (WiFi.status()==WL_CONNECTED);
+  return WiFi.status()==WL_CONNECTED;
 }
 
 // ---------------- BLUETOOTH ----------------
@@ -188,11 +200,14 @@ void startBT(){
   if(SerialBT.hasClient()) return;
   SerialBT.begin("RanjanaSmartHome");
   Serial.println("Bluetooth started");
+  digitalWrite(LED_BT,HIGH);
 }
 
 void stopBT(){
-  if(SerialBT.hasClient()) SerialBT.end();
+  if(!SerialBT.hasClient()) return;
+  SerialBT.end();
   Serial.println("Bluetooth stopped");
+  digitalWrite(LED_BT,LOW);
 }
 
 // ---------------- TIMER + USAGE ----------------
@@ -216,7 +231,7 @@ void publishTimerStat(){
 void resetDailyUsage(){
   struct tm timeinfo;
   if(!getLocalTime(&timeinfo)) return;
-  int day = timeinfo.tm_mday;
+  int day=timeinfo.tm_mday;
   if(day!=lastDay){
     lastDay=day;
     for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i]=0;
@@ -225,44 +240,54 @@ void resetDailyUsage(){
 
 // ---------------- SWITCH CHECK ----------------
 void checkSwitch(){
-  bool state = digitalRead(SWITCH_PIN);
-  if(state == LOW && lastSwitchState == HIGH){ // pressed
-    lastSwitchState = LOW;
-    switchRequest = true;
-    targetWiFiMode = !wifiMode;
-  } else if(state == HIGH){
-    lastSwitchState = HIGH;
+  bool state=digitalRead(SWITCH_PIN);
+  if(state!=lastSwitchState && millis()-lastSwitchTime>200){
+    lastSwitchTime=millis();
+    lastSwitchState=state;
+    if(state==LOW){ // pressed
+      wifiMode=!wifiMode;
+      if(wifiMode){
+        stopBT();
+        WiFi.disconnect(true);
+        delay(1000);
+        connectWiFi();
+        delay(2000);
+        connectMQTT();
+        Serial.println("Switched to WiFi mode");
+      } else {
+        if(WiFi.status()==WL_CONNECTED) WiFi.disconnect(true);
+        if(mqtt.connected()) mqtt.disconnect();
+        espClient.stop();
+        delay(1000);
+        startBT();
+        Serial.println("Switched to Bluetooth mode");
+      }
+    }
   }
 }
 
-// ---------------- STYLISH BOOT BLINK ----------------
-void bootBlink(){
-  for(int i=0;i<3;i++){
-    digitalWrite(LED_WIFI,HIGH); delay(150);
-    digitalWrite(LED_WIFI,LOW); digitalWrite(LED_MQTT,HIGH); delay(150);
-    digitalWrite(LED_MQTT,LOW); digitalWrite(LED_BT,HIGH); delay(150);
-    digitalWrite(LED_BT,LOW);
-  }
-}
+// ---------------- WIFI STATUS ----------------
+void sendWiFiStatus(){
+  if(WiFi.status()!=WL_CONNECTED) return;
 
-// ---------------- TRANSITION BLINK ----------------
-void transitionBlink(){
-  for(int i=0;i<6;i++){
-    digitalWrite(LED_WIFI,HIGH); digitalWrite(LED_MQTT,HIGH); digitalWrite(LED_BT,HIGH);
-    delay(100);
-    digitalWrite(LED_WIFI,LOW); digitalWrite(LED_MQTT,LOW); digitalWrite(LED_BT,LOW);
-    delay(100);
-  }
+  jsonWiFiDoc.clear();
+  jsonWiFiDoc["ssid"]=WiFi.SSID();
+  jsonWiFiDoc["rssi"]=WiFi.RSSI();
+  char buf[128];
+  serializeJson(jsonWiFiDoc,buf);
+  if(mqtt.connected()) mqtt.publish(topicWifi,buf);
 }
 
 // ---------------- SETUP ----------------
 void setup(){
   Serial.begin(115200);
   pinMode(SWITCH_PIN, INPUT_PULLUP);
-
-  pinMode(LED_WIFI, OUTPUT);
-  pinMode(LED_MQTT, OUTPUT);
-  pinMode(LED_BT, OUTPUT);
+  pinMode(LED_WIFI,OUTPUT);
+  pinMode(LED_MQTT,OUTPUT);
+  pinMode(LED_BT,OUTPUT);
+  digitalWrite(LED_WIFI,LOW);
+  digitalWrite(LED_MQTT,LOW);
+  digitalWrite(LED_BT,LOW);
 
   for(int i=0;i<NUM_RELAYS;i++){
     pinMode(relayPins[i],OUTPUT);
@@ -272,14 +297,13 @@ void setup(){
   prefs.begin("relay",false);
 
   for(int i=0;i<NUM_RELAYS;i++){
-    char key[10];
-    sprintf(key,"r%d",i);
+    char key[10]; sprintf(key,"r%d",i);
     relayState[i]=prefs.getBool(key,false);
     if(relayState[i]) relayStartTime[i]=millis();
   }
 
-  bootBlink();          // stylish boot blink
-  wifiMode = true;
+  // Start WiFi initially
+  wifiMode=true;
   connectWiFi();
   delay(2000);
   connectMQTT();
@@ -289,69 +313,40 @@ void setup(){
 void loop(){
   checkSwitch();
 
-  if(switchRequest){
-    switchRequest = false;
-    transitionBlink();  // 1s blink for mode change
+  // Update LEDs
+  digitalWrite(LED_WIFI,wifiMode?HIGH:LOW);
+  digitalWrite(LED_MQTT,(wifiMode && mqtt.connected())?HIGH:LOW);
 
-    if(targetWiFiMode){
-      stopBT();
-      delay(500);
-      WiFi.disconnect(true);
-      delay(500);
-      connectWiFi();
-      delay(1000);
+  // WiFi mode
+  if(wifiMode && WiFi.status()==WL_CONNECTED){
+    if(!mqtt.connected() && millis()-lastMQTTRetry>5000){
       connectMQTT();
-      wifiMode = true;
-      Serial.println("Switched to WiFi mode");
-    } else {
-      if(WiFi.status()==WL_CONNECTED) WiFi.disconnect(true);
-      if(mqtt.connected()) mqtt.disconnect();
-      espClient.stop();
-      delay(500);
-      startBT();
-      wifiMode = false;
-      Serial.println("Switched to Bluetooth mode");
+      lastMQTTRetry=millis();
     }
+    mqtt.loop();
   }
 
-  // ---------------- STATUS LEDs ----------------
-  if(wifiMode){
-    digitalWrite(LED_BT, LOW);
-    digitalWrite(LED_WIFI, WiFi.status()==WL_CONNECTED ? HIGH : (millis()%500<250 ? HIGH : LOW));
-    digitalWrite(LED_MQTT, mqtt.connected() ? HIGH : (millis()%500<250 ? HIGH : LOW));
-  } else {
-    digitalWrite(LED_BT, HIGH);
-    digitalWrite(LED_WIFI, LOW);
-    digitalWrite(LED_MQTT, LOW);
-  }
-
-  // ---------------- WIFI / MQTT ----------------
-  if(wifiMode){
-    if(WiFi.status()==WL_CONNECTED){
-      if(!mqtt.connected() && millis()-lastMQTTRetry>5000){
-        connectMQTT();
-        lastMQTTRetry=millis();
-      }
-      mqtt.loop();
-    }
-  }
-
-  // ---------------- TIMER ----------------
+  // Timer / Usage
   if(millis()-lastTimerCheck>1000){
     checkTimers();
     resetDailyUsage();
     lastTimerCheck=millis();
   }
 
-  // Send relay status every 5 minutes
-  static unsigned long lastStatus=0;
-  if(millis()-lastStatus>300000){
+  // Periodic relay status via BT (every 20s)
+  if(!wifiMode && SerialBT.hasClient() && millis()-lastBTSend>20000){
     for(int i=0;i<NUM_RELAYS;i++){
       timerIndex=i;
       publishTimerStat();
       delay(50);
     }
-    lastStatus=millis();
+    lastBTSend=millis();
+  }
+
+  // Periodic WiFi status via MQTT every 30s
+  if(wifiMode && mqtt.connected() && millis()-lastWiFiSend>30000){
+    sendWiFiStatus();
+    lastWiFiSend=millis();
   }
 
   delay(50);
