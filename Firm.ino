@@ -44,17 +44,17 @@ TaskHandle_t wifiTaskHandle;
 TaskHandle_t controlTaskHandle;
 
 unsigned long lastMQTTRetry=0;
-unsigned long lastRelayPublish=0;
-unsigned long lastFullPublish=0;
-unsigned long lastWiFiReport=0;
+unsigned long lastTimerStat=0;
+unsigned long lastWiFiPublish=0;
 unsigned long wifiConnectedTime=0;
 bool btRunning=false;
-int relayIndex=0;
-int lastDay=-1; // For daily usage reset
+int timerIndex=0;
+int lastDay=-1;
 
-// Pre-allocated JSON documents (to reduce heap fragmentation)
+// Pre-allocated JSON documents
 StaticJsonDocument<256> jsonRelayDoc;
-StaticJsonDocument<64> jsonWiFiDoc;
+StaticJsonDocument<128> jsonWiFiDoc;
+StaticJsonDocument<128> jsonTimerDoc;
 
 // ---------------- DEVICE ID ----------------
 String getDeviceID(){
@@ -67,6 +67,8 @@ String getDeviceID(){
 // ---------------- RELAY CONTROL ----------------
 void setRelay(int id,bool state){
   if(id<0 || id>=NUM_RELAYS) return;
+
+  bool changed = (relayState[id] != state);
 
   if(state && !relayState[id]) relayStartTime[id]=millis();
   if(!state && relayState[id]){
@@ -81,9 +83,23 @@ void setRelay(int id,bool state){
   char key[10];
   sprintf(key,"r%d",id);
   prefs.putBool(key,state);
+
+  // Instant publish if relay changed
+  if(changed){
+    jsonRelayDoc.clear();
+    jsonRelayDoc["r"]=id;
+    jsonRelayDoc["s"]=state?1:0;
+    jsonRelayDoc["t"]=relayTimers[id]/1000;
+    jsonRelayDoc["ut"]=relayUsageTotal[id]/60000;
+    jsonRelayDoc["ud"]=relayUsageToday[id]/60000;
+    char buf[256];
+    serializeJson(jsonRelayDoc,buf);
+    if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
+    if(btRunning) SerialBT.println(buf);
+  }
 }
 
-// ---------------- TIMER ----------------
+// ---------------- TIMER CHECK ----------------
 void checkTimers(){
   unsigned long now=millis();
   for(int i=0;i<NUM_RELAYS;i++){
@@ -111,7 +127,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 
 // ---------------- MQTT CONNECT ----------------
 bool connectMQTT(){
-  espClient.stop();          // Fix TLS reconnect
+  espClient.stop();          
   espClient.setInsecure();
 
   mqtt.setServer(mqttServer,mqttPort);
@@ -123,7 +139,7 @@ bool connectMQTT(){
     mqtt.publish(topicWelcome,"ESP32 online",true);
     Serial.println("MQTT connected");
 
-    // Send all relays + usage on first connect
+    // Instant publish all relays once on startup
     for(int i=0;i<NUM_RELAYS;i++){
       relayTimers[i]=relayEndTime[i]>millis()?relayEndTime[i]-millis():0;
       jsonRelayDoc.clear();
@@ -134,10 +150,10 @@ bool connectMQTT(){
       jsonRelayDoc["ud"]=relayUsageToday[i]/60000;
       char buf[256];
       serializeJson(jsonRelayDoc,buf);
-      mqtt.publish(topicUpdate,buf);
+      if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
       if(btRunning) SerialBT.println(buf);
     }
-    lastFullPublish=millis();
+
     return true;
   }
   Serial.println("MQTT failed");
@@ -218,24 +234,21 @@ void handleBT(){
   }
 }
 
-// ---------------- PUBLISH RELAY ----------------
-void publishRelay(int id){
-  jsonRelayDoc.clear();
-  jsonRelayDoc["r"]=id;
-  jsonRelayDoc["s"]=relayState[id]?1:0;
-  jsonRelayDoc["t"]=relayTimers[id]/1000;
-  jsonRelayDoc["ut"]=relayUsageTotal[id]/60000;
-  jsonRelayDoc["ud"]=relayUsageToday[id]/60000;
-
-  char buf[256];
-  serializeJson(jsonRelayDoc,buf);
+// ---------------- PUBLISH TIMER STAT ----------------
+void publishTimerStat(){
+  jsonTimerDoc.clear();
+  jsonTimerDoc["r"]=timerIndex;
+  jsonTimerDoc["t"]=relayTimers[timerIndex]/1000;
+  jsonTimerDoc["ut"]=relayUsageTotal[timerIndex]/60000;
+  jsonTimerDoc["ud"]=relayUsageToday[timerIndex]/60000;
+  char buf[128];
+  serializeJson(jsonTimerDoc,buf);
 
   if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
   if(btRunning) SerialBT.println(buf);
-}
 
-void publishAllRelays(){
-  for(int i=0;i<NUM_RELAYS;i++) publishRelay(i);
+  timerIndex++;
+  if(timerIndex>=NUM_RELAYS) timerIndex=0;
 }
 
 // ---------------- DAILY RESET ----------------
@@ -253,7 +266,8 @@ void resetDailyUsage(){
 
 // ---------------- WIFI + MQTT TASK (CORE0) ----------------
 void wifiTask(void *pv){
-  static unsigned long lastWiFiReportTask=0;
+  static unsigned long lastWiFiTaskPublish=0;
+
   for(;;){
     esp_task_wdt_reset();
     if(WiFi.status()!=WL_CONNECTED) connectWiFi();
@@ -268,15 +282,16 @@ void wifiTask(void *pv){
 
       if(mqtt.connected()) mqtt.loop();
 
-      // WiFi SSID + RSSI every 20s
-      if(millis()-lastWiFiReportTask>20000){
+      // WiFi info every 20 sec
+      if(millis()-lastWiFiTaskPublish>20000){
         jsonWiFiDoc.clear();
         jsonWiFiDoc["n"]=WiFi.SSID();
         jsonWiFiDoc["r"]=WiFi.RSSI();
-        char buf[64];
+        char buf[128];
         serializeJson(jsonWiFiDoc,buf);
         if(mqtt.connected()) mqtt.publish(topicWifi,buf);
-        lastWiFiReportTask=millis();
+        if(btRunning) SerialBT.println(buf);
+        lastWiFiTaskPublish=millis();
       }
     }
     vTaskDelay(100/portTICK_PERIOD_MS);
@@ -285,24 +300,16 @@ void wifiTask(void *pv){
 
 // ---------------- CONTROL TASK (CORE1) ----------------
 void controlTask(void *pv){
+  static unsigned long lastTimerStatTask=0;
   for(;;){
     esp_task_wdt_reset();
-
     checkTimers();
     resetDailyUsage();
 
-    // Each relay every 5 sec
-    if(millis()-lastRelayPublish>5000){
-      publishRelay(relayIndex);
-      relayIndex++;
-      if(relayIndex>=NUM_RELAYS) relayIndex=0;
-      lastRelayPublish=millis();
-    }
-
-    // Full publish every 1 min
-    if(millis()-lastFullPublish>60000){
-      publishAllRelays();
-      lastFullPublish=millis();
+    // Timer + usage stats every 10 sec per relay
+    if(millis()-lastTimerStatTask>10000){
+      publishTimerStat();
+      lastTimerStatTask=millis();
     }
 
     // Bluetooth ON/OFF based on MQTT
@@ -329,7 +336,11 @@ void setup(){
 
   prefs.begin("relay",false);
 
-  esp_task_wdt_init();
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 30000,
+    .panic = false
+  };
+  esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
 
   xTaskCreatePinnedToCore(wifiTask,"wifiTask",10000,NULL,1,&wifiTaskHandle,0);
