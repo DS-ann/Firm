@@ -44,8 +44,6 @@ TaskHandle_t wifiTaskHandle;
 TaskHandle_t controlTaskHandle;
 
 unsigned long lastMQTTRetry=0;
-unsigned long lastTimerStat=0;
-unsigned long lastWiFiPublish=0;
 unsigned long wifiConnectedTime=0;
 bool btRunning=false;
 int timerIndex=0;
@@ -127,7 +125,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 
 // ---------------- MQTT CONNECT ----------------
 bool connectMQTT(){
-  espClient.stop();          
+  espClient.stop();
   espClient.setInsecure();
 
   mqtt.setServer(mqttServer,mqttPort);
@@ -301,6 +299,9 @@ void wifiTask(void *pv){
 // ---------------- CONTROL TASK (CORE1) ----------------
 void controlTask(void *pv){
   static unsigned long lastTimerStatTask=0;
+  static unsigned long lastFullStatusTask=0;
+  static int fullStatusIndex=0; // For sending split messages
+
   for(;;){
     esp_task_wdt_reset();
     checkTimers();
@@ -310,6 +311,26 @@ void controlTask(void *pv){
     if(millis()-lastTimerStatTask>10000){
       publishTimerStat();
       lastTimerStatTask=millis();
+    }
+
+    // Full relay status every 5 min, split across 8 messages
+    if(millis()-lastFullStatusTask>300000){ // 5*60*1000 ms
+      jsonRelayDoc.clear();
+      jsonRelayDoc["r"]=fullStatusIndex;
+      jsonRelayDoc["s"]=relayState[fullStatusIndex]?1:0;
+      jsonRelayDoc["t"]=relayTimers[fullStatusIndex]/1000;
+      jsonRelayDoc["ut"]=relayUsageTotal[fullStatusIndex]/60000;
+      jsonRelayDoc["ud"]=relayUsageToday[fullStatusIndex]/60000;
+      char buf[256];
+      serializeJson(jsonRelayDoc,buf);
+      if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
+      if(btRunning) SerialBT.println(buf);
+
+      fullStatusIndex++;
+      if(fullStatusIndex>=NUM_RELAYS){
+        fullStatusIndex=0;
+        lastFullStatusTask=millis(); // Reset 5 min timer after all relays sent
+      }
     }
 
     // Bluetooth ON/OFF based on MQTT
@@ -336,11 +357,8 @@ void setup(){
 
   prefs.begin("relay",false);
 
-  esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = 30000,
-    .panic = false
-  };
-  esp_task_wdt_init(&wdt_config);
+  // Correct ESP32 WDT init (no panic member)
+  esp_task_wdt_init(30, false); // timeout 30 sec, no panic
   esp_task_wdt_add(NULL);
 
   xTaskCreatePinnedToCore(wifiTask,"wifiTask",10000,NULL,1,&wifiTaskHandle,0);
