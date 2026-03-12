@@ -42,14 +42,12 @@ Preferences prefs;
 TaskHandle_t wifiTaskHandle;
 TaskHandle_t controlTaskHandle;
 
-unsigned long lastMQTTRetry=0;
 unsigned long lastTimerStat=0;
+unsigned long lastRelayPublish=0;
 unsigned long lastWiFiPublish=0;
-unsigned long lastFullPublish=0;
 unsigned long wifiConnectedTime=0;
 bool btRunning=false;
 int timerIndex=0;
-int fullPublishIndex=0;
 int lastDay=-1;
 
 // Pre-allocated JSON documents
@@ -85,7 +83,7 @@ void setRelay(int id,bool state){
   sprintf(key,"r%d",id);
   prefs.putBool(key,state);
 
-  // Instant publish if relay changed (Bluetooth or MQTT)
+  // Instant publish if relay changed
   if(changed){
     jsonRelayDoc.clear();
     jsonRelayDoc["r"]=id;
@@ -128,7 +126,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 
 // ---------------- MQTT CONNECT ----------------
 bool connectMQTT(){
-  espClient.stop();          
+  espClient.stop();          // Reset TLS
   espClient.setInsecure();
 
   mqtt.setServer(mqttServer,mqttPort);
@@ -140,7 +138,7 @@ bool connectMQTT(){
     mqtt.publish(topicWelcome,"ESP32 online",true);
     Serial.println("MQTT connected");
 
-    // Startup publish of all relays once
+    // Startup publish all relays once
     for(int i=0;i<NUM_RELAYS;i++){
       relayTimers[i]=relayEndTime[i]>millis()?relayEndTime[i]-millis():0;
       jsonRelayDoc.clear();
@@ -161,7 +159,7 @@ bool connectMQTT(){
 }
 
 // ---------------- WIFI CONNECT ----------------
-void connectWiFi(){
+bool connectWiFi(){
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(500);
@@ -186,7 +184,7 @@ void connectWiFi(){
 
   if(bestSSID==-1){
     Serial.println("Known WiFi not found");
-    return;
+    return false;
   }
 
   Serial.print("Connecting ");
@@ -201,17 +199,10 @@ void connectWiFi(){
   if(WiFi.status()==WL_CONNECTED){
     Serial.println("WiFi connected");
     wifiConnectedTime=millis();
-
-    // Immediately stop Bluetooth if it was running
-    if(btRunning){
-      SerialBT.end();
-      btRunning=false;
-      Serial.println("Bluetooth stopped due to WiFi reconnect");
-    }
-
-    // Reset TLS for proper MQTT reconnect
-    espClient.stop();
-  } else Serial.println("WiFi connect failed");
+    return true;
+  }
+  Serial.println("WiFi connect failed");
+  return false;
 }
 
 // ---------------- BLUETOOTH ----------------
@@ -220,6 +211,13 @@ void startBT(){
   SerialBT.begin("RanjanaSmartHome");
   btRunning=true;
   Serial.println("Bluetooth started");
+}
+
+void stopBT(){
+  if(!btRunning) return;
+  SerialBT.end();
+  btRunning=false;
+  Serial.println("Bluetooth stopped");
 }
 
 // ---------------- BLUETOOTH COMMAND ----------------
@@ -238,38 +236,20 @@ void handleBT(){
 }
 
 // ---------------- PUBLISH TIMER STAT ----------------
-void publishTimerStat(){
-  jsonTimerDoc.clear();
-  jsonTimerDoc["r"]=timerIndex;
-  jsonTimerDoc["t"]=relayTimers[timerIndex]/1000;
-  jsonTimerDoc["ut"]=relayUsageTotal[timerIndex]/60000;
-  jsonTimerDoc["ud"]=relayUsageToday[timerIndex]/60000;
-  char buf[128];
-  serializeJson(jsonTimerDoc,buf);
+void publishRelayStatus(){
+  for(int i=0;i<NUM_RELAYS;i++){
+    jsonTimerDoc.clear();
+    jsonTimerDoc["r"]=i;
+    jsonTimerDoc["s"]=relayState[i]?1:0;
+    jsonTimerDoc["t"]=relayTimers[i]/1000;
+    jsonTimerDoc["ut"]=relayUsageTotal[i]/60000;
+    jsonTimerDoc["ud"]=relayUsageToday[i]/60000;
+    char buf[128];
+    serializeJson(jsonTimerDoc,buf);
 
-  if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
-  if(btRunning) SerialBT.println(buf);
-
-  timerIndex++;
-  if(timerIndex>=NUM_RELAYS) timerIndex=0;
-}
-
-// ---------------- PUBLISH FULL RELAY STATES ----------------
-void publishFullRelays(){
-  jsonRelayDoc.clear();
-  jsonRelayDoc["r"]=fullPublishIndex;
-  jsonRelayDoc["s"]=relayState[fullPublishIndex]?1:0;
-  jsonRelayDoc["t"]=relayTimers[fullPublishIndex]/1000;
-  jsonRelayDoc["ut"]=relayUsageTotal[fullPublishIndex]/60000;
-  jsonRelayDoc["ud"]=relayUsageToday[fullPublishIndex]/60000;
-  char buf[256];
-  serializeJson(jsonRelayDoc,buf);
-
-  if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
-  if(btRunning) SerialBT.println(buf);
-
-  fullPublishIndex++;
-  if(fullPublishIndex>=NUM_RELAYS) fullPublishIndex=0;
+    if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
+    if(btRunning) SerialBT.println(buf);
+  }
 }
 
 // ---------------- DAILY RESET ----------------
@@ -285,62 +265,66 @@ void resetDailyUsage(){
   }
 }
 
-// ---------------- WIFI + MQTT TASK (CORE0) ----------------
+// ---------------- WIFI + MQTT TASK ----------------
 void wifiTask(void *pv){
-  static unsigned long lastWiFiTaskPublish=0;
-
+  bool lastWiFiStatus=false;
   for(;;){
-    if(WiFi.status()!=WL_CONNECTED) connectWiFi();
+    bool connected=connectWiFi();
 
-    if(WiFi.status()==WL_CONNECTED){
-      if(!mqtt.connected()){
-        if(millis()-wifiConnectedTime>8000 && millis()-lastMQTTRetry>5000){
-          connectMQTT();
-          lastMQTTRetry=millis();
-        }
+    // WiFi lost handling
+    if(!connected){
+      if(mqtt.connected()){
+        mqtt.disconnect();
+        Serial.println("MQTT disconnected due to WiFi loss");
       }
+      stopBT();
+      delay(800);
+      startBT();
+      lastWiFiStatus=false;
+    } else {
+      // WiFi connected
+      if(!lastWiFiStatus){
+        stopBT();
+        espClient.stop(); // reset TLS
+        connectMQTT();
+      }
+      lastWiFiStatus=true;
 
-      if(mqtt.connected()) mqtt.loop();
-
-      // WiFi info every 20 sec
-      if(millis()-lastWiFiTaskPublish>20000){
+      // Publish WiFi info every loop
+      if(millis()-lastWiFiPublish>10000){
         jsonWiFiDoc.clear();
         jsonWiFiDoc["n"]=WiFi.SSID();
         jsonWiFiDoc["r"]=WiFi.RSSI();
         char buf[128];
         serializeJson(jsonWiFiDoc,buf);
         if(mqtt.connected()) mqtt.publish(topicWifi,buf);
-        if(btRunning) SerialBT.println(buf);
-        lastWiFiTaskPublish=millis();
+        lastWiFiPublish=millis();
       }
-    } else {
-      // Start Bluetooth if WiFi disconnected
-      if(!btRunning) startBT();
     }
 
-    vTaskDelay(100/portTICK_PERIOD_MS);
+    if(mqtt.connected()) mqtt.loop();
+    vTaskDelay(200/portTICK_PERIOD_MS);
   }
 }
 
-// ---------------- CONTROL TASK (CORE1) ----------------
+// ---------------- CONTROL TASK ----------------
 void controlTask(void *pv){
   static unsigned long lastTimerStatTask=0;
-  static unsigned long lastFullPublishTask=0;
-
+  static unsigned long lastRelayPublishTask=0;
   for(;;){
     checkTimers();
     resetDailyUsage();
 
     // Timer + usage stats every 10 sec per relay
     if(millis()-lastTimerStatTask>10000){
-      publishTimerStat();
       lastTimerStatTask=millis();
+      // optional per-relay stats already handled in setRelay
     }
 
-    // Full relay states every 5 min (8 separate messages)
-    if(millis()-lastFullPublishTask>300000){
-      publishFullRelays();
-      lastFullPublishTask=millis();
+    // Publish all relays every 5 min (split 8 messages)
+    if(millis()-lastRelayPublishTask>300000){
+      lastRelayPublishTask=millis();
+      publishRelayStatus();
     }
 
     handleBT();
@@ -360,7 +344,8 @@ void setup(){
 
   prefs.begin("relay",false);
 
-  xTaskCreatePinnedToCore(wifiTask,"wifiTask",10000,NULL,1,&wifiTaskHandle,0);
+  // Start tasks
+  xTaskCreatePinnedToCore(wifiTask,"wifiTask",12000,NULL,1,&wifiTaskHandle,0);
   xTaskCreatePinnedToCore(controlTask,"controlTask",8000,NULL,1,&controlTaskHandle,1);
 }
 
