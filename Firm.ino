@@ -44,9 +44,13 @@ TaskHandle_t wifiTaskHandle;
 TaskHandle_t controlTaskHandle;
 
 unsigned long lastMQTTRetry=0;
+unsigned long lastTimerStat=0;
+unsigned long lastWiFiPublish=0;
+unsigned long lastFullRelayPublish=0;
 unsigned long wifiConnectedTime=0;
 bool btRunning=false;
 int timerIndex=0;
+int fullRelayIndex=0;
 int lastDay=-1;
 
 // Pre-allocated JSON documents
@@ -82,7 +86,7 @@ void setRelay(int id,bool state){
   sprintf(key,"r%d",id);
   prefs.putBool(key,state);
 
-  // Instant publish if relay changed
+  // Instant publish if relay changed (MQTT + BT)
   if(changed){
     jsonRelayDoc.clear();
     jsonRelayDoc["r"]=id;
@@ -137,7 +141,7 @@ bool connectMQTT(){
     mqtt.publish(topicWelcome,"ESP32 online",true);
     Serial.println("MQTT connected");
 
-    // Instant publish all relays once on startup
+    // Publish all relays once on startup
     for(int i=0;i<NUM_RELAYS;i++){
       relayTimers[i]=relayEndTime[i]>millis()?relayEndTime[i]-millis():0;
       jsonRelayDoc.clear();
@@ -249,6 +253,23 @@ void publishTimerStat(){
   if(timerIndex>=NUM_RELAYS) timerIndex=0;
 }
 
+// ---------------- PUBLISH FULL RELAY STATUS EVERY 5 MIN ----------------
+void publishFullRelaySplit(){
+  jsonRelayDoc.clear();
+  jsonRelayDoc["r"]=fullRelayIndex;
+  jsonRelayDoc["s"]=relayState[fullRelayIndex]?1:0;
+  jsonRelayDoc["t"]=relayTimers[fullRelayIndex]/1000;
+  jsonRelayDoc["ut"]=relayUsageTotal[fullRelayIndex]/60000;
+  jsonRelayDoc["ud"]=relayUsageToday[fullRelayIndex]/60000;
+  char buf[256];
+  serializeJson(jsonRelayDoc,buf);
+  if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
+  if(btRunning) SerialBT.println(buf);
+
+  fullRelayIndex++;
+  if(fullRelayIndex>=NUM_RELAYS) fullRelayIndex=0;
+}
+
 // ---------------- DAILY RESET ----------------
 void resetDailyUsage(){
   struct tm timeinfo;
@@ -299,9 +320,7 @@ void wifiTask(void *pv){
 // ---------------- CONTROL TASK (CORE1) ----------------
 void controlTask(void *pv){
   static unsigned long lastTimerStatTask=0;
-  static unsigned long lastFullStatusTask=0;
-  static int fullStatusIndex=0; // For sending split messages
-
+  static unsigned long lastFullRelayTask=0;
   for(;;){
     esp_task_wdt_reset();
     checkTimers();
@@ -313,24 +332,10 @@ void controlTask(void *pv){
       lastTimerStatTask=millis();
     }
 
-    // Full relay status every 5 min, split across 8 messages
-    if(millis()-lastFullStatusTask>300000){ // 5*60*1000 ms
-      jsonRelayDoc.clear();
-      jsonRelayDoc["r"]=fullStatusIndex;
-      jsonRelayDoc["s"]=relayState[fullStatusIndex]?1:0;
-      jsonRelayDoc["t"]=relayTimers[fullStatusIndex]/1000;
-      jsonRelayDoc["ut"]=relayUsageTotal[fullStatusIndex]/60000;
-      jsonRelayDoc["ud"]=relayUsageToday[fullStatusIndex]/60000;
-      char buf[256];
-      serializeJson(jsonRelayDoc,buf);
-      if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
-      if(btRunning) SerialBT.println(buf);
-
-      fullStatusIndex++;
-      if(fullStatusIndex>=NUM_RELAYS){
-        fullStatusIndex=0;
-        lastFullStatusTask=millis(); // Reset 5 min timer after all relays sent
-      }
+    // Full relay split publish every 5 min
+    if(millis()-lastFullRelayTask>300000){ // 5 min
+      publishFullRelaySplit();
+      lastFullRelayTask=millis();
     }
 
     // Bluetooth ON/OFF based on MQTT
@@ -357,8 +362,11 @@ void setup(){
 
   prefs.begin("relay",false);
 
-  // Correct ESP32 WDT init (no panic member)
-  esp_task_wdt_init(30, false); // timeout 30 sec, no panic
+  // ✅ Correct WDT init for ESP32 core 3.3.7
+  esp_task_wdt_config_t wdt_config = {
+    .timeout_ms = 30000
+  };
+  esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL);
 
   xTaskCreatePinnedToCore(wifiTask,"wifiTask",10000,NULL,1,&wifiTaskHandle,0);
