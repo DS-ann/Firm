@@ -13,19 +13,19 @@ const char* ssidList[NUM_WIFI] = {"Lenovo","vivo Y15s","POCO5956","TPLink"};
 const char* passwordList[NUM_WIFI] = {"debarghya","debarghya1","debarghya2","pass2"};
 
 // ---------------- MQTT ----------------
-const char* mqttServer = "5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
-const int mqttPort = 8883;
-const char* mqttUser = "Debarghya_Sannigrahi";
-const char* mqttPassword = "Dsann#5956";
+const char* mqttServer="5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
+const int mqttPort=8883;
+const char* mqttUser="Debarghya_Sannigrahi";
+const char* mqttPassword="Dsann#5956";
 
-const char* topicCmd     = "home/esp32/commands";
-const char* topicUpdate  = "home/esp32/update";
-const char* topicWelcome = "home/esp32/welcome";
-const char* topicWifi    = "home/esp32/wifi_status";
+const char* topicCmd="home/esp32/commands";
+const char* topicUpdate="home/esp32/update";
+const char* topicWelcome="home/esp32/welcome";
+const char* topicWifi="home/esp32/wifi_status";
 
 // ---------------- RELAYS ----------------
 #define NUM_RELAYS 8
-const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
+const int relayPins[NUM_RELAYS]={13,4,5,18,19,21,22,23};
 
 bool relayState[NUM_RELAYS];
 unsigned long relayTimers[NUM_RELAYS];
@@ -43,35 +43,39 @@ Preferences prefs;
 TaskHandle_t wifiTaskHandle;
 TaskHandle_t controlTaskHandle;
 
-unsigned long lastMQTTRetry     = 0;
-unsigned long lastRelayPublish  = 0;
-unsigned long lastFullPublish   = 0;
-unsigned long lastWiFiReport    = 0;
-unsigned long wifiConnectedTime = 0;
-int relayIndex                  = 0;
-int lastDay                     = -1;  // Daily usage reset
-bool btRunning                  = false;
+unsigned long lastMQTTRetry=0;
+unsigned long lastRelayPublish=0;
+unsigned long lastFullPublish=0;
+unsigned long lastWiFiReport=0;
+unsigned long wifiConnectedTime=0;
+bool btRunning=false;
+int relayIndex=0;
+int lastDay=-1; // For daily usage reset
+
+// Pre-allocated JSON documents (to reduce heap fragmentation)
+StaticJsonDocument<256> jsonRelayDoc;
+StaticJsonDocument<64> jsonWiFiDoc;
 
 // ---------------- DEVICE ID ----------------
 String getDeviceID(){
-  uint64_t chipid = ESP.getEfuseMac();
+  uint64_t chipid=ESP.getEfuseMac();
   char id[20];
   sprintf(id,"esp32_%04X",(uint16_t)(chipid>>32));
   return String(id);
 }
 
-// ---------------- RELAY ----------------
+// ---------------- RELAY CONTROL ----------------
 void setRelay(int id,bool state){
   if(id<0 || id>=NUM_RELAYS) return;
 
-  if(state && !relayState[id]) relayStartTime[id] = millis();
+  if(state && !relayState[id]) relayStartTime[id]=millis();
   if(!state && relayState[id]){
-    unsigned long dur = millis() - relayStartTime[id];
-    relayUsageTotal[id] += dur;
-    relayUsageToday[id] += dur;
+    unsigned long dur=millis()-relayStartTime[id];
+    relayUsageTotal[id]+=dur;
+    relayUsageToday[id]+=dur;
   }
 
-  relayState[id] = state;
+  relayState[id]=state;
   digitalWrite(relayPins[id],state?LOW:HIGH);
 
   char key[10];
@@ -81,97 +85,84 @@ void setRelay(int id,bool state){
 
 // ---------------- TIMER ----------------
 void checkTimers(){
-  unsigned long now = millis();
+  unsigned long now=millis();
   for(int i=0;i<NUM_RELAYS;i++){
     if(relayEndTime[i]>0 && now>=relayEndTime[i]){
       setRelay(i,false);
       relayEndTime[i]=0;
       relayTimers[i]=0;
     } else if(relayEndTime[i]>now){
-      relayTimers[i] = relayEndTime[i]-now;
+      relayTimers[i]=relayEndTime[i]-now;
     }
-  }
-}
-
-// ---------------- DAILY USAGE RESET ----------------
-void resetDailyUsage(){
-  struct tm timeinfo;
-  if(!getLocalTime(&timeinfo)) return;
-  int day = timeinfo.tm_mday;
-  if(day != lastDay){
-    lastDay = day;
-    for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i] = 0;
-    Serial.println("Daily usage reset");
   }
 }
 
 // ---------------- MQTT CALLBACK ----------------
 void mqttCallback(char* topic, byte* payload, unsigned int len){
-  StaticJsonDocument<128> doc;
-  if(deserializeJson(doc,payload,len)) return;
+  if(deserializeJson(jsonRelayDoc,payload,len)) return;
 
-  int id = doc["r"];
-  bool state = doc["s"];
-  int timer = doc["t"];
+  int id=jsonRelayDoc["r"];
+  bool state=jsonRelayDoc["s"];
+  int timer=jsonRelayDoc["t"];
 
   setRelay(id,state);
-  if(timer>0) relayEndTime[id] = millis() + timer*1000;
+  if(timer>0) relayEndTime[id]=millis()+timer*1000;
 }
 
 // ---------------- MQTT CONNECT ----------------
 bool connectMQTT(){
-  espClient.stop();           // fix TLS reconnect
+  espClient.stop();          // Fix TLS reconnect
   espClient.setInsecure();
 
   mqtt.setServer(mqttServer,mqttPort);
   mqtt.setCallback(mqttCallback);
 
-  String id = getDeviceID();
+  String id=getDeviceID();
   if(mqtt.connect(id.c_str(),mqttUser,mqttPassword)){
     mqtt.subscribe(topicCmd);
     mqtt.publish(topicWelcome,"ESP32 online",true);
     Serial.println("MQTT connected");
 
-    // send full relay + usage on connect
+    // Send all relays + usage on first connect
     for(int i=0;i<NUM_RELAYS;i++){
-      relayTimers[i] = relayEndTime[i]>millis()?relayEndTime[i]-millis():0;
-      StaticJsonDocument<128> doc;
-      doc["r"]  = i;
-      doc["s"]  = relayState[i]?1:0;
-      doc["t"]  = relayTimers[i]/1000;
-      doc["ut"] = relayUsageTotal[i]/60000;
-      doc["ud"] = relayUsageToday[i]/60000;
-      char buf[128];
-      serializeJson(doc,buf);
+      relayTimers[i]=relayEndTime[i]>millis()?relayEndTime[i]-millis():0;
+      jsonRelayDoc.clear();
+      jsonRelayDoc["r"]=i;
+      jsonRelayDoc["s"]=relayState[i]?1:0;
+      jsonRelayDoc["t"]=relayTimers[i]/1000;
+      jsonRelayDoc["ut"]=relayUsageTotal[i]/60000;
+      jsonRelayDoc["ud"]=relayUsageToday[i]/60000;
+      char buf[256];
+      serializeJson(jsonRelayDoc,buf);
       mqtt.publish(topicUpdate,buf);
       if(btRunning) SerialBT.println(buf);
     }
-    lastFullPublish = millis();
+    lastFullPublish=millis();
     return true;
   }
   Serial.println("MQTT failed");
   return false;
 }
 
-// ---------------- WIFI ----------------
+// ---------------- WIFI CONNECT ----------------
 void connectWiFi(){
   WiFi.mode(WIFI_STA);
   WiFi.disconnect(true);
   delay(500);
 
   Serial.println("Scanning WiFi");
-  int n = WiFi.scanNetworks();
+  int n=WiFi.scanNetworks();
   int bestSSID=-1;
   int bestRSSI=-1000;
 
   for(int i=0;i<n;i++){
-    String found = WiFi.SSID(i);
+    String found=WiFi.SSID(i);
     for(int j=0;j<NUM_WIFI;j++){
       if(found==ssidList[j]){
-        int rssi = WiFi.RSSI(i);
+        int rssi=WiFi.RSSI(i);
         if(rssi>bestRSSI){
-          bestRSSI = rssi;
-          bestSSID = j;
+          bestRSSI=rssi;
+          bestSSID=j;
         }
       }
     }
@@ -187,11 +178,13 @@ void connectWiFi(){
   WiFi.begin(ssidList[bestSSID],passwordList[bestSSID]);
 
   unsigned long start=millis();
-  while(WiFi.status()!=WL_CONNECTED && millis()-start<10000) delay(200);
+  while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
+    delay(200);
+  }
 
   if(WiFi.status()==WL_CONNECTED){
     Serial.println("WiFi connected");
-    wifiConnectedTime = millis();
+    wifiConnectedTime=millis();
   } else Serial.println("WiFi connect failed");
 }
 
@@ -199,14 +192,14 @@ void connectWiFi(){
 void startBT(){
   if(btRunning) return;
   SerialBT.begin("RanjanaSmartHome");
-  btRunning = true;
+  btRunning=true;
   Serial.println("Bluetooth started");
 }
 
 void stopBT(){
   if(!btRunning) return;
   SerialBT.end();
-  btRunning = false;
+  btRunning=false;
   Serial.println("Bluetooth stopped");
 }
 
@@ -214,12 +207,11 @@ void stopBT(){
 void handleBT(){
   if(!btRunning) return;
   if(SerialBT.available()){
-    String data = SerialBT.readStringUntil('\n');
-    StaticJsonDocument<128> doc;
-    if(!deserializeJson(doc,data)){
-      int id = doc["r"];
-      bool state = doc["s"];
-      int timer = doc["t"];
+    String data=SerialBT.readStringUntil('\n');
+    if(!deserializeJson(jsonRelayDoc,data)){
+      int id=jsonRelayDoc["r"];
+      bool state=jsonRelayDoc["s"];
+      int timer=jsonRelayDoc["t"];
       setRelay(id,state);
       if(timer>0) relayEndTime[id]=millis()+timer*1000;
     }
@@ -228,51 +220,65 @@ void handleBT(){
 
 // ---------------- PUBLISH RELAY ----------------
 void publishRelay(int id){
-  StaticJsonDocument<128> doc;
-  doc["r"]  = id;
-  doc["s"]  = relayState[id]?1:0;
-  doc["t"]  = relayTimers[id]/1000;
-  doc["ut"] = relayUsageTotal[id]/60000;
-  doc["ud"] = relayUsageToday[id]/60000;
-  char buf[128];
-  serializeJson(doc,buf);
+  jsonRelayDoc.clear();
+  jsonRelayDoc["r"]=id;
+  jsonRelayDoc["s"]=relayState[id]?1:0;
+  jsonRelayDoc["t"]=relayTimers[id]/1000;
+  jsonRelayDoc["ut"]=relayUsageTotal[id]/60000;
+  jsonRelayDoc["ud"]=relayUsageToday[id]/60000;
+
+  char buf[256];
+  serializeJson(jsonRelayDoc,buf);
 
   if(mqtt.connected()) mqtt.publish(topicUpdate,buf);
   if(btRunning) SerialBT.println(buf);
 }
 
-void publishAllRelays(){ for(int i=0;i<NUM_RELAYS;i++) publishRelay(i); }
+void publishAllRelays(){
+  for(int i=0;i<NUM_RELAYS;i++) publishRelay(i);
+}
+
+// ---------------- DAILY RESET ----------------
+void resetDailyUsage(){
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)) return;
+
+  int day = timeinfo.tm_mday;
+  if(day!=lastDay){
+    lastDay=day;
+    for(int i=0;i<NUM_RELAYS;i++) relayUsageToday[i]=0;
+    Serial.println("Daily usage reset");
+  }
+}
 
 // ---------------- WIFI + MQTT TASK (CORE0) ----------------
 void wifiTask(void *pv){
-  static unsigned long lastWiFiReport = 0;
+  static unsigned long lastWiFiReportTask=0;
   for(;;){
     esp_task_wdt_reset();
-
     if(WiFi.status()!=WL_CONNECTED) connectWiFi();
 
     if(WiFi.status()==WL_CONNECTED){
       if(!mqtt.connected()){
         if(millis()-wifiConnectedTime>8000 && millis()-lastMQTTRetry>5000){
           connectMQTT();
-          lastMQTTRetry = millis();
+          lastMQTTRetry=millis();
         }
       }
 
       if(mqtt.connected()) mqtt.loop();
 
-      // WiFi RSSI every 20s
-      if(millis()-lastWiFiReport>20000){
-        StaticJsonDocument<64> doc;
-        doc["n"]=WiFi.SSID();
-        doc["r"]=WiFi.RSSI();
+      // WiFi SSID + RSSI every 20s
+      if(millis()-lastWiFiReportTask>20000){
+        jsonWiFiDoc.clear();
+        jsonWiFiDoc["n"]=WiFi.SSID();
+        jsonWiFiDoc["r"]=WiFi.RSSI();
         char buf[64];
-        serializeJson(doc,buf);
+        serializeJson(jsonWiFiDoc,buf);
         if(mqtt.connected()) mqtt.publish(topicWifi,buf);
-        lastWiFiReport=millis();
+        lastWiFiReportTask=millis();
       }
     }
-
     vTaskDelay(100/portTICK_PERIOD_MS);
   }
 }
@@ -285,7 +291,7 @@ void controlTask(void *pv){
     checkTimers();
     resetDailyUsage();
 
-    // Publish each relay every 5 sec
+    // Each relay every 5 sec
     if(millis()-lastRelayPublish>5000){
       publishRelay(relayIndex);
       relayIndex++;
@@ -323,12 +329,7 @@ void setup(){
 
   prefs.begin("relay",false);
 
-  // Correct WDT config
-  esp_task_wdt_config_t wdt_config = {
-    .timeout_ms = 30000,
-    .panic = true
-  };
-  esp_task_wdt_init(&wdt_config);
+  esp_task_wdt_init();
   esp_task_wdt_add(NULL);
 
   xTaskCreatePinnedToCore(wifiTask,"wifiTask",10000,NULL,1,&wifiTaskHandle,0);
@@ -336,4 +337,6 @@ void setup(){
 }
 
 // ---------------- LOOP ----------------
-void loop(){ vTaskDelay(1000); }
+void loop(){
+  vTaskDelay(1000);
+}
