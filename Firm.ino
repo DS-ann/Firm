@@ -19,25 +19,25 @@ const char* mqttPassword="Dsann#5956";
 const char* topicCmd="home/esp32/commands";
 const char* topicUpdate="home/esp32/update";
 const char* topicWifi="home/esp32/wifi_status";
+const char* topicWelcome="home/esp32/welcome";
 
 // ---------------- RELAYS ----------------
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS]={13,4,5,18,19,21,22,23};
 
 bool relayState[NUM_RELAYS];
-bool pendingSave[NUM_RELAYS];
-unsigned long relayChangeTime[NUM_RELAYS];
+unsigned long usageTotal[NUM_RELAYS];
+unsigned long usageDaily[NUM_RELAYS];
 
 // ---------------- SWITCH ----------------
 #define SWITCH_PIN 33
 bool lastSwitchState=HIGH;
 unsigned long lastSwitchTime=0;
-bool modeTransition=false;
 
 // ---------------- LED ----------------
-#define LED_WIFI 2
-#define LED_MQTT 15
-#define LED_BT 14
+#define LED_WIFI 25
+#define LED_MQTT 26
+#define LED_BT 27
 
 // ---------------- STATE MACHINE ----------------
 enum SystemState{
@@ -57,16 +57,18 @@ PubSubClient mqtt(espClient);
 BluetoothSerial SerialBT;
 Preferences prefs;
 
+bool btRunning=false;
+
 // ---------------- TIMERS ----------------
-unsigned long lastBTSend=0;
 unsigned long lastWiFiSend=0;
+unsigned long lastBTSend=0;
 unsigned long lastMQTTRetry=0;
-unsigned long mqttConnectTime=0;
+unsigned long wifiRetryTimer=0;
 
 // ---------------- JSON ----------------
 StaticJsonDocument<200> jsonDoc;
 
-// ---------------- STARTUP LED ----------------
+// ---------------- STARTUP ANIMATION ----------------
 void startupAnimation(){
 
 for(int i=0;i<3;i++){
@@ -87,58 +89,33 @@ digitalWrite(LED_BT,LOW);
 
 }
 
-// ---------------- LED LOGIC ----------------
-void ledLogic(){
-
-if(state==WIFI_MODE){
-
-digitalWrite(LED_WIFI,HIGH);
-
-if(mqtt.connected())
-digitalWrite(LED_MQTT,HIGH);
-else
-digitalWrite(LED_MQTT,(millis()/400)%2);
-
-digitalWrite(LED_BT,LOW);
-
-}
-
-else if(state==BT_MODE){
-
-digitalWrite(LED_WIFI,LOW);
-digitalWrite(LED_MQTT,LOW);
-digitalWrite(LED_BT,(millis()/700)%2);
-
-}
-
-}
-
-// ---------------- WIFI CONNECT ----------------
+// ---------------- BEST WIFI CONNECT ----------------
 bool connectWiFi(){
 
 WiFi.mode(WIFI_STA);
-WiFi.disconnect(true);
+WiFi.disconnect(true,true);
 delay(500);
 
 Serial.println("Scanning WiFi");
 
 int n=WiFi.scanNetworks();
 
-int best=-1;
 int bestRSSI=-999;
+int bestSaved=-1;
 
 for(int i=0;i<n;i++){
 
+String foundSSID=WiFi.SSID(i);
+int rssi=WiFi.RSSI(i);
+
 for(int j=0;j<NUM_WIFI;j++){
 
-if(WiFi.SSID(i)==ssidList[j]){
+if(foundSSID==ssidList[j]){
 
-if(WiFi.RSSI(i)>bestRSSI){
+if(rssi>bestRSSI){
 
-bestRSSI=WiFi.RSSI(i);
-best=j;
-
-}
+bestRSSI=rssi;
+bestSaved=j;
 
 }
 
@@ -146,14 +123,22 @@ best=j;
 
 }
 
-if(best==-1) return false;
+}
 
-WiFi.begin(ssidList[best],passwordList[best]);
+if(bestSaved==-1) return false;
+
+Serial.print("Connecting to ");
+Serial.println(ssidList[bestSaved]);
+
+WiFi.begin(ssidList[bestSaved],passwordList[bestSaved]);
 
 unsigned long start=millis();
 
-while(WiFi.status()!=WL_CONNECTED && millis()-start<12000)
+while(WiFi.status()!=WL_CONNECTED && millis()-start<12000){
+
 delay(200);
+
+}
 
 return WiFi.status()==WL_CONNECTED;
 
@@ -163,12 +148,14 @@ return WiFi.status()==WL_CONNECTED;
 bool connectMQTT(){
 
 espClient.setInsecure();
+
 mqtt.setServer(mqttServer,mqttPort);
 
 if(mqtt.connect("ESP32Smart",mqttUser,mqttPassword)){
 
 mqtt.subscribe(topicCmd);
-mqttConnectTime=millis();
+
+mqtt.publish(topicWelcome,"ESP32 online",true);
 
 Serial.println("MQTT connected");
 
@@ -180,17 +167,23 @@ return false;
 
 }
 
-// ---------------- SEND RELAY STATES ----------------
-void sendRelayStates(){
+// ---------------- RELAY CONTROL ----------------
+void setRelay(int id,bool s){
+
+relayState[id]=s;
+
+digitalWrite(relayPins[id],s?LOW:HIGH);
+
+char key[10];
+sprintf(key,"r%d",id);
+prefs.putBool(key,s);
 
 jsonDoc.clear();
 
-JsonArray arr=jsonDoc.createNestedArray("r");
+jsonDoc["r"]=id;
+jsonDoc["s"]=s;
 
-for(int i=0;i<NUM_RELAYS;i++)
-arr.add(relayState[i]);
-
-char buf[120];
+char buf[80];
 
 serializeJson(jsonDoc,buf);
 
@@ -202,33 +195,6 @@ SerialBT.println(buf);
 
 }
 
-// ---------------- WIFI STATUS ----------------
-void sendWiFiStatus(){
-
-jsonDoc.clear();
-jsonDoc["w"]=WiFi.RSSI();
-
-char buf[80];
-
-serializeJson(jsonDoc,buf);
-
-mqtt.publish(topicWifi,buf);
-
-}
-
-// ---------------- RELAY CONTROL ----------------
-void setRelay(int id,bool s){
-
-relayState[id]=s;
-digitalWrite(relayPins[id],s?LOW:HIGH);
-
-pendingSave[id]=true;
-relayChangeTime[id]=millis();
-
-sendRelayStates();
-
-}
-
 // ---------------- MQTT CALLBACK ----------------
 void mqttCallback(char* topic, byte* payload, unsigned int len){
 
@@ -237,50 +203,37 @@ if(deserializeJson(jsonDoc,payload,len)) return;
 int r=jsonDoc["r"];
 bool s=jsonDoc["s"];
 
-if(r>=0 && r<NUM_RELAYS)
 setRelay(r,s);
-
-}
-
-// ---------------- FLASH SAVE PROTECTION ----------------
-void saveRelayStates(){
-
-for(int i=0;i<NUM_RELAYS;i++){
-
-if(pendingSave[i] && millis()-relayChangeTime[i]>3000){
-
-char key[10];
-sprintf(key,"r%d",i);
-
-prefs.putBool(key,relayState[i]);
-
-pendingSave[i]=false;
-
-}
-
-}
 
 }
 
 // ---------------- BLUETOOTH ----------------
 void startBT(){
 
+if(btRunning) return;
+
 Serial.println("Bluetooth started");
+
 SerialBT.begin("RanjanaSmartHome");
+
+btRunning=true;
 
 }
 
 void stopBT(){
 
+if(!btRunning) return;
+
 Serial.println("Bluetooth stopped");
+
 SerialBT.end();
+
+btRunning=false;
 
 }
 
 // ---------------- SWITCH ----------------
 void checkSwitch(){
-
-if(modeTransition) return;
 
 bool reading=digitalRead(SWITCH_PIN);
 
@@ -291,17 +244,31 @@ lastSwitchState=reading;
 
 if(reading==LOW){
 
-modeTransition=true;
-
-if(state==WIFI_MODE)
+if(state==WIFI_MODE || state==WIFI_START)
 state=WIFI_STOP;
 
-else if(state==BT_MODE)
+else if(state==BT_MODE || state==BT_START)
 state=BT_STOP;
 
 }
 
 }
+
+}
+
+// ---------------- WIFI STATUS ----------------
+void sendWiFiStatus(){
+
+jsonDoc.clear();
+
+jsonDoc["s"]=WiFi.SSID();
+jsonDoc["r"]=WiFi.RSSI();
+
+char buf[100];
+
+serializeJson(jsonDoc,buf);
+
+mqtt.publish(topicWifi,buf);
 
 }
 
@@ -312,11 +279,17 @@ switch(state){
 
 case WIFI_START:
 
+if(millis()-wifiRetryTimer<10000) return;
+wifiRetryTimer=millis();
+
 Serial.println("Starting WiFi");
 
 if(connectWiFi()){
 
+delay(1000);
+
 mqtt.setCallback(mqttCallback);
+
 connectMQTT();
 
 state=WIFI_MODE;
@@ -327,32 +300,23 @@ break;
 
 case WIFI_MODE:
 
-// WIFI RECONNECT FIX
-if(WiFi.status()!=WL_CONNECTED){
-
-Serial.println("WiFi lost, reconnecting");
-connectWiFi();
-return;
-
-}
+if(WiFi.status()==WL_CONNECTED){
 
 if(!mqtt.connected()){
 
 if(millis()-lastMQTTRetry>5000){
 
 connectMQTT();
+
 lastMQTTRetry=millis();
 
 }
 
-}
-
-else{
+}else{
 
 mqtt.loop();
 
-if(millis()-mqttConnectTime>5000)
-sendRelayStates();
+}
 
 }
 
@@ -363,14 +327,13 @@ case WIFI_STOP:
 Serial.println("Stopping WiFi");
 
 mqtt.disconnect();
+
+WiFi.disconnect(true,true);
+
 espClient.stop();
 
-WiFi.disconnect(true);
-WiFi.mode(WIFI_OFF);
+delay(2000);
 
-delay(1000);
-
-modeTransition=false;
 state=BT_START;
 
 break;
@@ -378,6 +341,7 @@ break;
 case BT_START:
 
 startBT();
+
 state=BT_MODE;
 
 break;
@@ -392,9 +356,8 @@ Serial.println("Stopping Bluetooth");
 
 stopBT();
 
-delay(1000);
+delay(2000);
 
-modeTransition=false;
 state=WIFI_START;
 
 break;
@@ -417,6 +380,7 @@ pinMode(LED_BT,OUTPUT);
 for(int i=0;i<NUM_RELAYS;i++){
 
 pinMode(relayPins[i],OUTPUT);
+
 digitalWrite(relayPins[i],HIGH);
 
 }
@@ -432,8 +396,6 @@ relayState[i]=prefs.getBool(key,false);
 
 digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
 
-pendingSave[i]=false;
-
 }
 
 startupAnimation();
@@ -447,13 +409,25 @@ checkSwitch();
 
 runStateMachine();
 
-saveRelayStates();
-
-ledLogic();
-
 if(state==BT_MODE && SerialBT.hasClient() && millis()-lastBTSend>20000){
 
-sendRelayStates();
+for(int i=0;i<NUM_RELAYS;i++){
+
+jsonDoc.clear();
+
+jsonDoc["r"]=i;
+jsonDoc["s"]=relayState[i];
+
+char buf[60];
+
+serializeJson(jsonDoc,buf);
+
+SerialBT.println(buf);
+
+delay(30);
+
+}
+
 lastBTSend=millis();
 
 }
@@ -461,6 +435,7 @@ lastBTSend=millis();
 if(state==WIFI_MODE && mqtt.connected() && millis()-lastWiFiSend>30000){
 
 sendWiFiStatus();
+
 lastWiFiSend=millis();
 
 }
