@@ -77,7 +77,7 @@ void updateLEDs(){
   if(millis()-lastBlink>500){ blinkState=!blinkState; lastBlink=millis(); }
 
   // WiFi LED
-  if(state==WIFI_START) digitalWrite(LED_WIFI,blinkState); // blink immediately
+  if(state==WIFI_START) digitalWrite(LED_WIFI,blinkState); // blink when starting WiFi
   else if(state==WIFI_MODE){
     if(WiFi.status()!=WL_CONNECTED) digitalWrite(LED_WIFI,blinkState);
     else digitalWrite(LED_WIFI,HIGH);
@@ -98,10 +98,12 @@ void updateLEDs(){
 void setRelay(int id,bool s){
   relayState[id]=s;
   digitalWrite(relayPins[id],s?LOW:HIGH);
-  if(s && relayEndTime[id]==0) relayStartTime[id]=millis();
-  else if(relayStartTime[id]>0){
-    usageTotal[id]+=millis()-relayStartTime[id];
-    usageDaily[id]+=millis()-relayStartTime[id];
+
+  if(s && relayStartTime[id]==0) relayStartTime[id]=millis();
+  else if(!s && relayStartTime[id]>0){
+    unsigned long dur=millis()-relayStartTime[id];
+    usageTotal[id]+=dur;
+    usageDaily[id]+=dur;
     relayStartTime[id]=0;
   }
   char key[10]; sprintf(key,"r%d",id); prefs.putBool(key,s);
@@ -109,16 +111,23 @@ void setRelay(int id,bool s){
 
 // ---------------- SEND RELAYS ----------------
 void sendRelayMsg(){
-  char buf[50];
+  char buf[100];
+
   // First 4 relays
-  sprintf(buf,"R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu",relayState[0]?1:0,relayState[1]?1:0,relayState[2]?1:0,relayState[3]?1:0,
-          relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000);
+  sprintf(buf,"R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+          relayState[0]?1:0,relayState[1]?1:0,relayState[2]?1:0,relayState[3]?1:0,
+          relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000,
+          usageTotal[0]/60000,usageTotal[1]/60000,usageTotal[2]/60000,usageTotal[3]/60000,
+          usageDaily[0]/60000,usageDaily[1]/60000,usageDaily[2]/60000,usageDaily[3]/60000);
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
   if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
 
   // Next 4 relays
-  sprintf(buf,"R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu",relayState[4]?1:0,relayState[5]?1:0,relayState[6]?1:0,relayState[7]?1:0,
-          relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000);
+  sprintf(buf,"R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+          relayState[4]?1:0,relayState[5]?1:0,relayState[6]?1:0,relayState[7]?1:0,
+          relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000,
+          usageTotal[4]/60000,usageTotal[5]/60000,usageTotal[6]/60000,usageTotal[7]/60000,
+          usageDaily[4]/60000,usageDaily[5]/60000,usageDaily[6]/60000,usageDaily[7]/60000);
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
   if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
 }
@@ -135,7 +144,9 @@ void checkTimers(){
   unsigned long now=millis();
   for(int i=0;i<NUM_RELAYS;i++){
     if(relayEndTime[i]>0 && now>=relayEndTime[i]){
-      setRelay(i,false); relayEndTime[i]=0; relayTimers[i]=0;
+      setRelay(i,false); 
+      relayEndTime[i]=0; 
+      relayTimers[i]=0;
     } else if(relayEndTime[i]>now){
       relayTimers[i]=relayEndTime[i]-now;
     }
@@ -160,7 +171,7 @@ void handleCommand(String cmd){
     int t=cmd.substring(2).toInt();
     relayEndTime[id]=millis()+t*60000;
     relayTimers[id]=t*60000;
-    setRelay(id,true); // turn relay on when timer set
+    setRelay(id,true); // turn relay on when timer is set
   }
 }
 
