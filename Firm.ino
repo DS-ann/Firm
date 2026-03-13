@@ -76,7 +76,7 @@ void updateLEDs(){
   if(millis()-lastBlink>500){ blinkState=!blinkState; lastBlink=millis(); }
 
   // WiFi LED
-  if(state==WIFI_START) digitalWrite(LED_WIFI,blinkState); // blink immediately
+  if(state==WIFI_START) digitalWrite(LED_WIFI,blinkState);
   else if(state==WIFI_MODE){
     if(WiFi.status()!=WL_CONNECTED) digitalWrite(LED_WIFI,blinkState);
     else digitalWrite(LED_WIFI,HIGH);
@@ -111,9 +111,10 @@ void setRelay(int id,bool s){
 
 // ---------------- SEND RELAYS ----------------
 void sendRelayMsg(){
-  char buf[100];
-  // First 4 relays
-  sprintf(buf,"R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+  char buf[120];
+
+  // First 4 relays -> label 'a'
+  sprintf(buf,"a:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
           relayState[0]?1:0,relayState[1]?1:0,relayState[2]?1:0,relayState[3]?1:0,
           relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000,
           usageTotal[0]/60000,usageTotal[1]/60000,usageTotal[2]/60000,usageTotal[3]/60000,
@@ -121,8 +122,8 @@ void sendRelayMsg(){
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
   if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
 
-  // Next 4 relays
-  sprintf(buf,"R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+  // Next 4 relays -> label 'b'
+  sprintf(buf,"b:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
           relayState[4]?1:0,relayState[5]?1:0,relayState[6]?1:0,relayState[7]?1:0,
           relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000,
           usageTotal[4]/60000,usageTotal[5]/60000,usageTotal[6]/60000,usageTotal[7]/60000,
@@ -214,8 +215,8 @@ bool connectMQTT(){
   if(mqtt.connect("ESP32Smart",mqttUser,mqttPassword)){
     mqtt.subscribe(topicCmd);
     mqtt.publish(topicWelcome,"ESP32 online",true);
-    sendRelayMsg();
-    sendWiFiMsg();
+    sendRelayMsg(); // instant sync
+    sendWiFiMsg();  // instant sync
     return true;
   }
   return false;
