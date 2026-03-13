@@ -3,6 +3,7 @@
 #include <WiFiClientSecure.h>
 #include <Preferences.h>
 #include <BluetoothSerial.h>
+#include <time.h>
 
 // ---------------- WIFI LIST ----------------
 #define NUM_WIFI 4
@@ -84,12 +85,16 @@ void updateLEDs(){
   if(millis()-lastBlink>500){ blinkState=!blinkState; lastBlink=millis(); }
 
   // WiFi LED
-  if(state==WIFI_MODE) digitalWrite(LED_WIFI,WiFi.status()==WL_CONNECTED?HIGH:blinkState);
-  else digitalWrite(LED_WIFI,LOW);
+  if(state==WIFI_MODE){
+    if(WiFi.status()!=WL_CONNECTED) digitalWrite(LED_WIFI,blinkState);
+    else digitalWrite(LED_WIFI,HIGH);
+  } else digitalWrite(LED_WIFI,LOW);
 
   // MQTT LED
-  if(state==WIFI_MODE) digitalWrite(LED_MQTT,mqtt.connected()?HIGH:blinkState);
-  else digitalWrite(LED_MQTT,LOW);
+  if(state==WIFI_MODE){
+    if(mqtt.connected()) digitalWrite(LED_MQTT,HIGH);
+    else digitalWrite(LED_MQTT,blinkState);
+  } else digitalWrite(LED_MQTT,LOW);
 
   // BT LED
   if(state==BT_MODE) digitalWrite(LED_BT,SerialBT.hasClient()?HIGH:blinkState);
@@ -101,15 +106,35 @@ void setRelay(int id,bool s){
   relayState[id]=s;
   digitalWrite(relayPins[id],s?LOW:HIGH);
   if(s) relayStartTime[id]=millis();
-  else if(relayStartTime[id]>0){ usageTotal[id]+=millis()-relayStartTime[id]; usageDaily[id]+=millis()-relayStartTime[id]; relayStartTime[id]=0; }
-
+  else if(relayStartTime[id]>0){
+    usageTotal[id]+=millis()-relayStartTime[id];
+    usageDaily[id]+=millis()-relayStartTime[id];
+    relayStartTime[id]=0;
+  }
   char key[10]; sprintf(key,"r%d",id); prefs.putBool(key,s);
+}
 
-  // Short message: r<s>
-  char buf[40]; sprintf(buf,"r%d:%d",id,s?1:0);
-
+// ---------------- SEND RELAYS ----------------
+void sendRelayMsg(){
+  char buf[50];
+  // First 4 relays
+  sprintf(buf,"R%1d%1d%1d%1dT%1d%1d%1d%1d",relayState[0]?1:0,relayState[1]?1:0,relayState[2]?1:0,relayState[3]?1:0,
+          relayTimers[0]/60,relayTimers[1]/60,relayTimers[2]/60,relayTimers[3]/60);
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
   if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
+
+  // Next 4 relays
+  sprintf(buf,"R%1d%1d%1d%1dT%1d%1d%1d%1d",relayState[4]?1:0,relayState[5]?1:0,relayState[6]?1:0,relayState[7]?1:0,
+          relayTimers[4]/60,relayTimers[5]/60,relayTimers[6]/60,relayTimers[7]/60);
+  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
+  if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
+}
+
+// ---------------- SEND WIFI ----------------
+void sendWiFiMsg(){
+  char buf[50];
+  sprintf(buf,"S%sR%d",WiFi.SSID().c_str(),WiFi.RSSI());
+  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicWifi,buf);
 }
 
 // ---------------- TIMER CHECK ----------------
@@ -117,10 +142,8 @@ void checkTimers(){
   unsigned long now=millis();
   for(int i=0;i<NUM_RELAYS;i++){
     if(relayEndTime[i]>0 && now>=relayEndTime[i]){
-      setRelay(i,false);
-      relayEndTime[i]=0;
-      relayTimers[i]=0;
-    }else if(relayEndTime[i]>now){
+      setRelay(i,false); relayEndTime[i]=0; relayTimers[i]=0;
+    } else if(relayEndTime[i]>now){
       relayTimers[i]=relayEndTime[i]-now;
     }
   }
@@ -128,6 +151,7 @@ void checkTimers(){
 
 // ---------------- MQTT CALLBACK ----------------
 void mqttCallback(char* topic, byte* payload, unsigned int len){
+  if(len<3) return;
   int id=payload[0]-'0';
   bool s=payload[2]=='1';
   setRelay(id,s);
@@ -137,9 +161,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 bool connectWiFi(){
   WiFi.mode(WIFI_STA); WiFi.disconnect(true,true); delay(500);
   Serial.println("Scanning WiFi");
-
-  int n=WiFi.scanNetworks();
-  int bestRSSI=-999; int bestSaved=-1;
+  int n=WiFi.scanNetworks(); int bestRSSI=-999; int bestSaved=-1;
   for(int i=0;i<n;i++){
     String f=WiFi.SSID(i); int r=WiFi.RSSI(i);
     for(int j=0;j<NUM_WIFI;j++){
@@ -164,13 +186,8 @@ bool connectMQTT(){
     mqtt.setCallback(mqttCallback);
     Serial.println("MQTT connected");
     // Send all relay states & timers immediately
-    for(int i=0;i<NUM_RELAYS;i++){
-      char buf[80]; sprintf(buf,"r%d:%d t:%lu u:%lu d:%lu",i,relayState[i]?1:0,usageTotal[i]/60000,usageDaily[i]/60000,relayTimers[i]/1000);
-      mqtt.publish(topicUpdate,buf);
-    }
-    // Send WiFi status
-    char buf2[80]; sprintf(buf2,"s:%s rssi:%d",WiFi.SSID().c_str(),WiFi.RSSI());
-    mqtt.publish(topicWifi,buf2);
+    sendRelayMsg();
+    sendWiFiMsg();
     return true;
   }
   return false;
@@ -237,19 +254,21 @@ void loop(){
   // Timer check 1s
   if(millis()-lastTimerCheck>1000){ checkTimers(); lastTimerCheck=millis(); }
 
-  // BT periodic updates
+  // BT periodic updates every 60s
   if(state==BT_MODE && SerialBT.hasClient() && millis()-lastBTSend>60000){
-    for(int i=0;i<NUM_RELAYS;i++){
-      char buf[80]; sprintf(buf,"r%d:%d t:%lu u:%lu d:%lu",i,relayState[i]?1:0,usageTotal[i]/60000,usageDaily[i]/60000,relayTimers[i]/1000);
-      SerialBT.println(buf);
-    }
+    sendRelayMsg();
     lastBTSend=millis();
   }
 
-  // WiFi periodic updates every 30s
+  // MQTT periodic updates every 1min
+  if(state==WIFI_MODE && mqtt.connected() && millis()-lastUsageSend>60000){
+    sendRelayMsg();
+    lastUsageSend=millis();
+  }
+
+  // MQTT WiFi status every 30s
   if(state==WIFI_MODE && mqtt.connected() && millis()-lastWiFiSend>30000){
-    char buf2[80]; sprintf(buf2,"s:%s rssi:%d",WiFi.SSID().c_str(),WiFi.RSSI());
-    mqtt.publish(topicWifi,buf2);
+    sendWiFiMsg();
     lastWiFiSend=millis();
   }
 
