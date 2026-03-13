@@ -109,7 +109,7 @@ void setRelay(int id,bool s){
 }
 
 // ---------------- SEND RELAYS ----------------
-void sendRelayMsg(){
+void sendRelayMsg(bool retained=false){
   char buf[100];
   // First 4 relays
   sprintf(buf,"R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
@@ -117,7 +117,7 @@ void sendRelayMsg(){
           relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000,
           usageTotal[0]/60000,usageTotal[1]/60000,usageTotal[2]/60000,usageTotal[3]/60000,
           usageDaily[0]/60000,usageDaily[1]/60000,usageDaily[2]/60000,usageDaily[3]/60000);
-  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
+  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf,retained);
   if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
 
   // Next 4 relays
@@ -126,7 +126,7 @@ void sendRelayMsg(){
           relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000,
           usageTotal[4]/60000,usageTotal[5]/60000,usageTotal[6]/60000,usageTotal[7]/60000,
           usageDaily[4]/60000,usageDaily[5]/60000,usageDaily[6]/60000,usageDaily[7]/60000);
-  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
+  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf,retained);
   if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
 }
 
@@ -179,6 +179,11 @@ void handleCommand(String cmd){
 void mqttCallback(char* topic, byte* payload, unsigned int len){
   String msg; for(int i=0;i<len;i++) msg+=char(payload[i]);
   handleCommand(msg);
+
+  // Respond to status requests
+  if(String(topic)=="home/esp32/status_request"){
+    sendRelayMsg(); // send current states instantly
+  }
 }
 
 // ---------------- CONNECT WIFI ----------------
@@ -207,12 +212,15 @@ bool connectWiFi(){
 bool connectMQTT(){
   espClient.setInsecure();
   mqtt.setServer(mqttServer,mqttPort);
+
   if(mqtt.connect("ESP32Smart",mqttUser,mqttPassword)){
     mqtt.subscribe(topicCmd);
+    mqtt.subscribe("home/esp32/status_request"); // subscribe to status requests
     mqtt.publish(topicWelcome,"ESP32 online",true);
     mqtt.setCallback(mqttCallback);
     Serial.println("MQTT connected");
-    sendRelayMsg();
+
+    sendRelayMsg(true); // send all relay states retained
     sendWiFiMsg();
     return true;
   }
