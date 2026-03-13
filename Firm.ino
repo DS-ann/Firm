@@ -89,8 +89,8 @@ void updateLEDs(){
   } else digitalWrite(LED_MQTT,LOW);
 
   // BT LED
-  if(state==BT_MODE) digitalWrite(LED_BT,SerialBT.hasClient()?HIGH:blinkState);
-  else digitalWrite(LED_BT,LOW);
+  if(SerialBT.hasClient()) digitalWrite(LED_BT,HIGH);
+  else digitalWrite(LED_BT,blinkState);
 }
 
 // ---------------- RELAY CONTROL ----------------
@@ -108,31 +108,32 @@ void setRelay(int id,bool s){
 
 // ---------------- SEND RELAYS ----------------
 void sendRelayMsg(){
-  char buf[50];
-  // First 4 relays
-  sprintf(buf,"R%1d%1d%1d%1dT%1d%1d%1d%1dU%1d%1d%1d%1dD%1d%1d%1d%1d",
+  char buf[100];
+  // First 4 relays: states + T,U,D with commas
+  sprintf(buf,"R%1d%1d%1d%1d,T%d,%d,%d,%d,U%d,%d,%d,%d,D%d,%d,%d,%d",
           relayState[0]?1:0,relayState[1]?1:0,relayState[2]?1:0,relayState[3]?1:0,
           relayTimers[0]/60,relayTimers[1]/60,relayTimers[2]/60,relayTimers[3]/60,
           usageTotal[0]/60000,usageTotal[1]/60000,usageTotal[2]/60000,usageTotal[3]/60000,
           usageDaily[0]/60000,usageDaily[1]/60000,usageDaily[2]/60000,usageDaily[3]/60000);
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
-  if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
+  if(SerialBT.hasClient()) SerialBT.println(buf);
 
   // Next 4 relays
-  sprintf(buf,"R%1d%1d%1d%1dT%1d%1d%1d%1dU%1d%1d%1d%1dD%1d%1d%1d%1d",
+  sprintf(buf,"R%1d%1d%1d%1d,T%d,%d,%d,%d,U%d,%d,%d,%d,D%d,%d,%d,%d",
           relayState[4]?1:0,relayState[5]?1:0,relayState[6]?1:0,relayState[7]?1:0,
           relayTimers[4]/60,relayTimers[5]/60,relayTimers[6]/60,relayTimers[7]/60,
           usageTotal[4]/60000,usageTotal[5]/60000,usageTotal[6]/60000,usageTotal[7]/60000,
           usageDaily[4]/60000,usageDaily[5]/60000,usageDaily[6]/60000,usageDaily[7]/60000);
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
-  if(state==BT_MODE && SerialBT.hasClient()) SerialBT.println(buf);
+  if(SerialBT.hasClient()) SerialBT.println(buf);
 }
 
 // ---------------- SEND WIFI ----------------
 void sendWiFiMsg(){
   char buf[50];
-  sprintf(buf,"S%sR%d",WiFi.SSID().c_str(),WiFi.RSSI());
+  sprintf(buf,"S%s,R%d",WiFi.SSID().c_str(),WiFi.RSSI());
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicWifi,buf);
+  if(SerialBT.hasClient()) SerialBT.println(buf);
 }
 
 // ---------------- TIMER CHECK ----------------
@@ -152,14 +153,14 @@ void handleCommand(String cmd){
   cmd.trim();
   if(cmd.length()<2) return;
 
-  // Relay ON/OFF
+  // Relay ON/OFF (e.g., 01 => relay 0 ON)
   if(cmd[0]>='0' && cmd[0]<='7' && (cmd[1]=='1' || cmd[1]=='0')){
     int id=cmd[0]-'0';
     bool s=cmd[1]=='1';
     setRelay(id,s);
   }
 
-  // Timer command: e.g., Tn60 (relay n timer 60 min)
+  // Timer command: e.g., T260 => relay 2 timer 60 min
   if(cmd[0]=='T' && cmd.length()>2){
     int id=cmd[1]-'0';
     int t=cmd.substring(2).toInt();
@@ -202,7 +203,7 @@ bool connectMQTT(){
     mqtt.publish(topicWelcome,"ESP32 online",true);
     mqtt.setCallback(mqttCallback);
     Serial.println("MQTT connected");
-    // First send full relay & WiFi status
+    // Send full initial status
     sendRelayMsg();
     sendWiFiMsg();
     return true;
@@ -256,9 +257,7 @@ void runStateMachine(){
       state=BT_START;
       break;
     case BT_START: startBT(); state=BT_MODE; break;
-    case BT_MODE:
-      while(SerialBT.available()){ String cmd=SerialBT.readStringUntil('\n'); handleCommand(cmd); }
-      break;
+    case BT_MODE: break;
     case BT_STOP: Serial.println("Stopping Bluetooth"); stopBT(); delay(2000); state=WIFI_START; break;
   }
 }
@@ -283,8 +282,16 @@ void loop(){
   // Timer check every 1s
   if(millis()-lastTimerCheck>1000){ checkTimers(); lastTimerCheck=millis(); }
 
+  // Bluetooth commands handled anytime
+  if(SerialBT.hasClient()){
+    while(SerialBT.available()){
+      String cmd = SerialBT.readStringUntil('\n');
+      handleCommand(cmd);
+    }
+  }
+
   // BT periodic updates every 60s
-  if(state==BT_MODE && SerialBT.hasClient() && millis()-lastBTSend>60000){
+  if(SerialBT.hasClient() && millis()-lastBTSend>60000){
     sendRelayMsg();
     lastBTSend=millis();
   }
