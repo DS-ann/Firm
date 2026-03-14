@@ -3,6 +3,7 @@
 #include <WiFiClientSecure.h>
 #include <Preferences.h>
 #include <BluetoothSerial.h>
+#include <time.h>  // for NTP time
 
 // ---------------- WIFI LIST ----------------
 #define NUM_WIFI 4
@@ -89,7 +90,6 @@ void setRelay(int id,bool s){
   if(s && !relayState[id]) relayStartTime[id]=millis();
   else if(!s && relayState[id] && relayStartTime[id]>0){
     usageDaily[id]+=millis()-relayStartTime[id];
-    // Store daily usage in preferences
     char key[10]; sprintf(key,"d%d",id);
     prefs.putULong(key,usageDaily[id]);
     relayStartTime[id]=0;
@@ -104,17 +104,29 @@ void blinkSendLED(){ digitalWrite(LED_SEND,HIGH); delay(50); digitalWrite(LED_SE
 
 void sendRelayMsg(){
   char buf[120];
+  unsigned long currentUsage[NUM_RELAYS];
+
+  for(int i=0;i<NUM_RELAYS;i++){
+      currentUsage[i] = usageDaily[i];
+      if(relayState[i] && relayStartTime[i]>0){
+          currentUsage[i] += millis() - relayStartTime[i];
+      }
+      if(relayEndTime[i]>0) relayTimers[i] = (relayEndTime[i] > millis()) ? relayEndTime[i]-millis() : 0;
+  }
+
   // First 4 relays -> label 'a'
-  sprintf(buf,"a:R%1d%1d%1d%1d,T%lu,D%lu,%lu,%lu,%lu",
-          relayState[0]?1:0,relayState[1]?1:0,relayState[2]?1:0,relayState[3]?1:0,
-          relayTimers[0]/60000, usageDaily[0]/60000, usageDaily[1]/60000, usageDaily[2]/60000, usageDaily[3]/60000);
+  sprintf(buf,"a:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+          relayState[0]?1:0, relayState[1]?1:0, relayState[2]?1:0, relayState[3]?1:0,
+          relayTimers[0]/60000, relayTimers[1]/60000, relayTimers[2]/60000, relayTimers[3]/60000,
+          currentUsage[0]/60000, currentUsage[1]/60000, currentUsage[2]/60000, currentUsage[3]/60000);
   if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicUpdate,buf); blinkSendLED(); }
   if(btRunning && SerialBT.hasClient()) { SerialBT.println(buf); blinkSendLED(); }
 
   // Next 4 relays -> label 'b'
-  sprintf(buf,"b:R%1d%1d%1d%1d,T%lu,D%lu,%lu,%lu,%lu",
-          relayState[4]?1:0,relayState[5]?1:0,relayState[6]?1:0,relayState[7]?1:0,
-          relayTimers[4]/60000, usageDaily[4]/60000, usageDaily[5]/60000, usageDaily[6]/60000, usageDaily[7]/60000);
+  sprintf(buf,"b:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+          relayState[4]?1:0, relayState[5]?1:0, relayState[6]?1:0, relayState[7]?1:0,
+          relayTimers[4]/60000, relayTimers[5]/60000, relayTimers[6]/60000, relayTimers[7]/60000,
+          currentUsage[4]/60000, currentUsage[5]/60000, currentUsage[6]/60000, currentUsage[7]/60000);
   if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicUpdate,buf); blinkSendLED(); }
   if(btRunning && SerialBT.hasClient()) { SerialBT.println(buf); blinkSendLED(); }
 }
@@ -139,15 +151,30 @@ void checkTimers(){
   }
 }
 
+// ---------------- DAILY RESET ----------------
+void checkDailyReset(){
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)) return;  // skip if time not available yet
+  int today = timeinfo.tm_mday;
+  int lastDay = prefs.getInt("lastDay",0);
+  if(today != lastDay){
+    for(int i=0;i<NUM_RELAYS;i++){
+      usageDaily[i]=0;
+      char dk[10]; sprintf(dk,"d%d",i); prefs.putULong(dk,usageDaily[i]);
+    }
+    prefs.putInt("lastDay",today);
+    Serial.println("Daily usage reset.");
+  }
+}
+
 // ---------------- COMMAND HANDLER ----------------
 void handleCommand(String cmd){
   cmd.trim();
   if(cmd.length()<1) return;
 
-  // NEW: If command is "status", send all data
   if(cmd == "status") {
-    sendRelayMsg();  // relay states + daily usage
-    sendWiFiMsg();   // wifi SSID + RSSI
+    sendRelayMsg();
+    sendWiFiMsg();
     return;
   }
 
@@ -174,7 +201,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 // ---------------- CONNECT WIFI ----------------
 bool connectWiFi(){
   WiFi.mode(WIFI_STA); WiFi.disconnect(true,true); delay(500);
-  if(btRunning && SerialBT.hasClient()) return false; // Disable scanning if BT client connected
+  if(btRunning && SerialBT.hasClient()) return false;
   int n=WiFi.scanNetworks(); int bestRSSI=-999; int bestSaved=-1;
   for(int i=0;i<n;i++){ String f=WiFi.SSID(i); int r=WiFi.RSSI(i);
     for(int j=0;j<NUM_WIFI;j++){ if(f==ssidList[j] && r>bestRSSI){ bestRSSI=r; bestSaved=j; } }
@@ -241,7 +268,7 @@ void runStateMachine(){
 
     case BT_MODE:
       while(SerialBT.available()){ String cmd=SerialBT.readStringUntil('\n'); handleCommand(cmd); }
-      if(SerialBT.hasClient() && btRunning) return; // Stop WiFi scanning if BT client connected
+      if(SerialBT.hasClient() && btRunning) return;
       if(millis()-lastWiFiScanBT>10000){ lastWiFiScanBT=millis();
         int bestRSSI=-999,bestSaved=-1;
         int n=WiFi.scanNetworks();
@@ -267,7 +294,6 @@ void setup(){
   for(int i=0;i<NUM_RELAYS;i++){
     char k[10]; sprintf(k,"r%d",i); relayState[i]=prefs.getBool(k,false);
     digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
-    // Load daily usage
     char dk[10]; sprintf(dk,"d%d",i); usageDaily[i]=prefs.getULong(dk,0);
   }
   startupAnimation();
@@ -275,7 +301,10 @@ void setup(){
 
 // ---------------- LOOP ----------------
 void loop(){
-  checkSwitch(); runStateMachine(); updateLEDs();
+  checkSwitch();
+  runStateMachine();
+  updateLEDs();
+  checkDailyReset();   // daily usage reset if NTP time available
   if(millis()-lastTimerCheck>1000){ checkTimers(); lastTimerCheck=millis(); }
   if(state==BT_MODE && SerialBT.hasClient() && millis()-lastBTSend>60000){ sendRelayMsg(); lastBTSend=millis(); }
   if(state==WIFI_MODE && mqtt.connected() && millis()-lastUsageSend>60000){ sendRelayMsg(); lastUsageSend=millis(); }
