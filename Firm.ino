@@ -23,7 +23,6 @@ const char* topicWelcome="home/esp32/welcome";
 #define NUM_RELAYS 8
 const int relayPins[NUM_RELAYS] = {13,4,5,18,19,21,22,23};
 bool relayState[NUM_RELAYS];
-unsigned long usageTotal[NUM_RELAYS];
 unsigned long usageDaily[NUM_RELAYS];
 unsigned long relayTimers[NUM_RELAYS];
 unsigned long relayEndTime[NUM_RELAYS];
@@ -38,6 +37,7 @@ unsigned long lastSwitchTime=0;
 #define LED_WIFI 25
 #define LED_MQTT 26
 #define LED_BT 27
+#define LED_SEND 2  // LED for message sending
 
 // ---------------- STATE MACHINE ----------------
 enum SystemState{
@@ -71,6 +71,7 @@ void startupAnimation(){
     digitalWrite(LED_WIFI,HIGH); delay(120); digitalWrite(LED_WIFI,LOW);
     digitalWrite(LED_MQTT,HIGH); delay(120); digitalWrite(LED_MQTT,LOW);
     digitalWrite(LED_BT,HIGH); delay(120); digitalWrite(LED_BT,LOW);
+    digitalWrite(LED_SEND,HIGH); delay(120); digitalWrite(LED_SEND,LOW);
   }
 }
 
@@ -87,8 +88,10 @@ void setRelay(int id,bool s){
   if(id<0 || id>=NUM_RELAYS) return;
   if(s && !relayState[id]) relayStartTime[id]=millis();
   else if(!s && relayState[id] && relayStartTime[id]>0){
-    usageTotal[id]+=millis()-relayStartTime[id];
     usageDaily[id]+=millis()-relayStartTime[id];
+    // Store daily usage in preferences
+    char key[10]; sprintf(key,"d%d",id);
+    prefs.putULong(key,usageDaily[id]);
     relayStartTime[id]=0;
   }
   relayState[id]=s;
@@ -97,31 +100,29 @@ void setRelay(int id,bool s){
 }
 
 // ---------------- SEND RELAYS ----------------
+void blinkSendLED(){ digitalWrite(LED_SEND,HIGH); delay(50); digitalWrite(LED_SEND,LOW); }
+
 void sendRelayMsg(){
   char buf[120];
   // First 4 relays -> label 'a'
-  sprintf(buf,"a:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+  sprintf(buf,"a:R%1d%1d%1d%1d,T%lu,D%lu,%lu,%lu,%lu",
           relayState[0]?1:0,relayState[1]?1:0,relayState[2]?1:0,relayState[3]?1:0,
-          relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000,
-          usageTotal[0]/60000,usageTotal[1]/60000,usageTotal[2]/60000,usageTotal[3]/60000,
-          usageDaily[0]/60000,usageDaily[1]/60000,usageDaily[2]/60000,usageDaily[3]/60000);
-  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
-  if(btRunning && SerialBT.hasClient()) SerialBT.println(buf);
+          relayTimers[0]/60000, usageDaily[0]/60000, usageDaily[1]/60000, usageDaily[2]/60000, usageDaily[3]/60000);
+  if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicUpdate,buf); blinkSendLED(); }
+  if(btRunning && SerialBT.hasClient()) { SerialBT.println(buf); blinkSendLED(); }
 
   // Next 4 relays -> label 'b'
-  sprintf(buf,"b:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,U%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
+  sprintf(buf,"b:R%1d%1d%1d%1d,T%lu,D%lu,%lu,%lu,%lu",
           relayState[4]?1:0,relayState[5]?1:0,relayState[6]?1:0,relayState[7]?1:0,
-          relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000,
-          usageTotal[4]/60000,usageTotal[5]/60000,usageTotal[6]/60000,usageTotal[7]/60000,
-          usageDaily[4]/60000,usageDaily[5]/60000,usageDaily[6]/60000,usageDaily[7]/60000);
-  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf);
-  if(btRunning && SerialBT.hasClient()) SerialBT.println(buf);
+          relayTimers[4]/60000, usageDaily[4]/60000, usageDaily[5]/60000, usageDaily[6]/60000, usageDaily[7]/60000);
+  if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicUpdate,buf); blinkSendLED(); }
+  if(btRunning && SerialBT.hasClient()) { SerialBT.println(buf); blinkSendLED(); }
 }
 
 // ---------------- SEND WIFI ----------------
 void sendWiFiMsg(){
   char buf[50]; sprintf(buf,"S%s,R%d",WiFi.SSID().c_str(),WiFi.RSSI());
-  if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicWifi,buf);
+  if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicWifi,buf); blinkSendLED(); }
 }
 
 // ---------------- TIMER CHECK ----------------
@@ -141,8 +142,16 @@ void checkTimers(){
 // ---------------- COMMAND HANDLER ----------------
 void handleCommand(String cmd){
   cmd.trim();
-  if(cmd.length()<2) return;
-  if(cmd[0]>='0' && cmd[0]<='7' && (cmd[1]=='1' || cmd[1]=='0')){
+  if(cmd.length()<1) return;
+
+  // NEW: If command is "status", send all data
+  if(cmd == "status") {
+    sendRelayMsg();  // relay states + daily usage
+    sendWiFiMsg();   // wifi SSID + RSSI
+    return;
+  }
+
+  if(cmd.length()>=2 && cmd[0]>='0' && cmd[0]<='7' && (cmd[1]=='1' || cmd[1]=='0')){
     int id=cmd[0]-'0'; bool s=cmd[1]=='1'; setRelay(id,s); sendRelayMsg();
   }
   if(cmd[0]=='T' && cmd.length()>=3){
@@ -165,6 +174,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int len){
 // ---------------- CONNECT WIFI ----------------
 bool connectWiFi(){
   WiFi.mode(WIFI_STA); WiFi.disconnect(true,true); delay(500);
+  if(btRunning && SerialBT.hasClient()) return false; // Disable scanning if BT client connected
   int n=WiFi.scanNetworks(); int bestRSSI=-999; int bestSaved=-1;
   for(int i=0;i<n;i++){ String f=WiFi.SSID(i); int r=WiFi.RSSI(i);
     for(int j=0;j<NUM_WIFI;j++){ if(f==ssidList[j] && r>bestRSSI){ bestRSSI=r; bestSaved=j; } }
@@ -231,6 +241,7 @@ void runStateMachine(){
 
     case BT_MODE:
       while(SerialBT.available()){ String cmd=SerialBT.readStringUntil('\n'); handleCommand(cmd); }
+      if(SerialBT.hasClient() && btRunning) return; // Stop WiFi scanning if BT client connected
       if(millis()-lastWiFiScanBT>10000){ lastWiFiScanBT=millis();
         int bestRSSI=-999,bestSaved=-1;
         int n=WiFi.scanNetworks();
@@ -250,10 +261,15 @@ void runStateMachine(){
 // ---------------- SETUP ----------------
 void setup(){
   Serial.begin(115200);
-  pinMode(SWITCH_PIN,INPUT_PULLUP); pinMode(LED_WIFI,OUTPUT); pinMode(LED_MQTT,OUTPUT); pinMode(LED_BT,OUTPUT);
+  pinMode(SWITCH_PIN,INPUT_PULLUP); pinMode(LED_WIFI,OUTPUT); pinMode(LED_MQTT,OUTPUT); pinMode(LED_BT,OUTPUT); pinMode(LED_SEND,OUTPUT);
   for(int i=0;i<NUM_RELAYS;i++){ pinMode(relayPins[i],OUTPUT); digitalWrite(relayPins[i],HIGH); }
   prefs.begin("relay",false);
-  for(int i=0;i<NUM_RELAYS;i++){ char k[10]; sprintf(k,"r%d",i); relayState[i]=prefs.getBool(k,false); digitalWrite(relayPins[i],relayState[i]?LOW:HIGH); }
+  for(int i=0;i<NUM_RELAYS;i++){
+    char k[10]; sprintf(k,"r%d",i); relayState[i]=prefs.getBool(k,false);
+    digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
+    // Load daily usage
+    char dk[10]; sprintf(dk,"d%d",i); usageDaily[i]=prefs.getULong(dk,0);
+  }
   startupAnimation();
 }
 
