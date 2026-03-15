@@ -10,12 +10,11 @@
 const char* ssidList[NUM_WIFI] = {"Lenovo","vivo Y15s","POCO5956","TPLink"};
 const char* passwordList[NUM_WIFI] = {"debarghya","debarghya1","debarghya2","pass2"};
 
-// ---------------- MQTT (EMQX CLOUD) ----------------
-const char* mqttServer="pe116bf0.ala.us-east-1.emqxsl.com";
+// ---------------- MQTT ----------------
+const char* mqttServer="5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud";
 const int mqttPort=8883;
 const char* mqttUser="Debarghya_Sannigrahi";
 const char* mqttPassword="Dsann#5956";
-
 const char* topicCmd="home/esp32/commands";
 const char* topicUpdate="home/esp32/update";
 const char* topicWifi="home/esp32/wifi_status";
@@ -39,7 +38,7 @@ unsigned long lastSwitchTime=0;
 #define LED_WIFI 25
 #define LED_MQTT 26
 #define LED_BT 27
-#define LED_SEND 32
+#define LED_SEND 2
 
 // ---------------- STATE MACHINE ----------------
 enum SystemState{
@@ -80,9 +79,16 @@ void startupAnimation(){
 // ---------------- LED UPDATE ----------------
 void updateLEDs(){
   if(millis()-lastBlink>500){ blinkState=!blinkState; lastBlink=millis(); }
+
   digitalWrite(LED_WIFI,(state==WIFI_START)?blinkState:(state==WIFI_MODE?(WiFi.status()!=WL_CONNECTED?blinkState:HIGH):LOW));
   digitalWrite(LED_MQTT,(state==WIFI_MODE)?(mqtt.connected()?HIGH:blinkState):LOW);
   digitalWrite(LED_BT,(state==BT_MODE)?(SerialBT.hasClient()?HIGH:blinkState):LOW);
+
+  // turn off send LED after 50ms (non-blocking)
+  static unsigned long sendLedTime=0;
+  if(digitalRead(LED_SEND)==HIGH && millis()-sendLedTime>50){
+    digitalWrite(LED_SEND,LOW);
+  }
 }
 
 // ---------------- RELAY CONTROL ----------------
@@ -104,38 +110,42 @@ void setRelay(int id,bool s){
   prefs.putBool(key,s);
 }
 
-// ---------------- SEND RELAYS ----------------
-void blinkSendLED(){ digitalWrite(LED_SEND,HIGH); delay(50); digitalWrite(LED_SEND,LOW); }
+// ---------------- SEND LED ----------------
+void blinkSendLED(){
+  digitalWrite(LED_SEND,HIGH);
+}
 
+// ---------------- SEND RELAYS ----------------
 void sendRelayMsg(){
   char buf[120];
   unsigned long currentUsage[NUM_RELAYS];
 
   for(int i=0;i<NUM_RELAYS;i++){
-      currentUsage[i] = usageDaily[i];
+    currentUsage[i]=usageDaily[i];
 
-      if(relayState[i] && relayStartTime[i]>0)
-        currentUsage[i] += millis() - relayStartTime[i];
+    if(relayState[i] && relayStartTime[i]>0){
+      currentUsage[i]+=millis()-relayStartTime[i];
+    }
 
-      if(relayEndTime[i]>0)
-        relayTimers[i] = (relayEndTime[i] > millis()) ? relayEndTime[i]-millis() : 0;
+    if(relayEndTime[i]>0)
+      relayTimers[i]=(relayEndTime[i]>millis())?relayEndTime[i]-millis():0;
   }
 
   sprintf(buf,"a:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
-          relayState[0],relayState[1],relayState[2],relayState[3],
-          relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000,
-          currentUsage[0]/60000,currentUsage[1]/60000,currentUsage[2]/60000,currentUsage[3]/60000);
+  relayState[0],relayState[1],relayState[2],relayState[3],
+  relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000,
+  currentUsage[0]/60000,currentUsage[1]/60000,currentUsage[2]/60000,currentUsage[3]/60000);
 
-  if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicUpdate,buf); blinkSendLED(); }
-  if(btRunning && SerialBT.hasClient()) { SerialBT.println(buf); blinkSendLED(); }
+  if(state==WIFI_MODE && mqtt.connected()){ mqtt.publish(topicUpdate,buf); blinkSendLED(); }
+  if(btRunning && SerialBT.hasClient()){ SerialBT.println(buf); blinkSendLED(); }
 
   sprintf(buf,"b:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
-          relayState[4],relayState[5],relayState[6],relayState[7],
-          relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000,
-          currentUsage[4]/60000,currentUsage[5]/60000,currentUsage[6]/60000,currentUsage[7]/60000);
+  relayState[4],relayState[5],relayState[6],relayState[7],
+  relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000,
+  currentUsage[4]/60000,currentUsage[5]/60000,currentUsage[6]/60000,currentUsage[7]/60000);
 
-  if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicUpdate,buf); blinkSendLED(); }
-  if(btRunning && SerialBT.hasClient()) { SerialBT.println(buf); blinkSendLED(); }
+  if(state==WIFI_MODE && mqtt.connected()){ mqtt.publish(topicUpdate,buf); blinkSendLED(); }
+  if(btRunning && SerialBT.hasClient()){ SerialBT.println(buf); blinkSendLED(); }
 }
 
 // ---------------- SEND WIFI ----------------
@@ -143,26 +153,15 @@ void sendWiFiMsg(){
   char buf[50];
   sprintf(buf,"S%s,R%d",WiFi.SSID().c_str(),WiFi.RSSI());
 
-  if(state==WIFI_MODE && mqtt.connected()) { mqtt.publish(topicWifi,buf); blinkSendLED(); }
-}
-
-// ---------------- TIMER CHECK ----------------
-void checkTimers(){
-  unsigned long now=millis();
-
-  for(int i=0;i<NUM_RELAYS;i++){
-    if(relayEndTime[i]>0){
-      if(now>=relayEndTime[i]){
-        setRelay(i,false);
-        relayEndTime[i]=0;
-        relayTimers[i]=0;
-      } else relayTimers[i]=relayEndTime[i]-now;
-    }
+  if(state==WIFI_MODE && mqtt.connected()){
+    mqtt.publish(topicWifi,buf);
+    blinkSendLED();
   }
 }
 
 // ---------------- COMMAND HANDLER ----------------
 void handleCommand(String cmd){
+
   cmd.trim();
   if(cmd.length()<1) return;
 
@@ -172,7 +171,7 @@ void handleCommand(String cmd){
     return;
   }
 
-  if(cmd.length()>=2 && cmd[0]>='0' && cmd[0]<='7'){
+  if(cmd.length()>=2 && cmd[0]>='0' && cmd[0]<='7' && (cmd[1]=='1'||cmd[1]=='0')){
     int id=cmd[0]-'0';
     bool s=cmd[1]=='1';
     setRelay(id,s);
@@ -197,7 +196,10 @@ void handleCommand(String cmd){
 // ---------------- MQTT CALLBACK ----------------
 void mqttCallback(char* topic, byte* payload, unsigned int len){
   String msg;
-  for(int i=0;i<len;i++) msg+=char(payload[i]);
+
+  for(int i=0;i<len;i++)
+    msg+=char(payload[i]);
+
   handleCommand(msg);
 }
 
@@ -215,14 +217,16 @@ bool connectWiFi(){
   int bestSaved=-1;
 
   for(int i=0;i<n;i++){
+
     String f=WiFi.SSID(i);
     int r=WiFi.RSSI(i);
 
-    for(int j=0;j<NUM_WIFI;j++)
+    for(int j=0;j<NUM_WIFI;j++){
       if(f==ssidList[j] && r>bestRSSI){
         bestRSSI=r;
         bestSaved=j;
       }
+    }
   }
 
   if(bestSaved==-1) return false;
@@ -231,10 +235,12 @@ bool connectWiFi(){
   Serial.println(ssidList[bestSaved]);
 
   unsigned long start=millis();
+
   WiFi.begin(ssidList[bestSaved],passwordList[bestSaved]);
 
-  while(WiFi.status()!=WL_CONNECTED && millis()-start<10000)
+  while(WiFi.status()!=WL_CONNECTED && millis()-start<10000){
     delay(50);
+  }
 
   return WiFi.status()==WL_CONNECTED;
 }
@@ -247,13 +253,15 @@ bool connectMQTT(){
   mqtt.setServer(mqttServer,mqttPort);
   mqtt.setCallback(mqttCallback);
 
-  delay(200);   // stabilization delay
-
   if(mqtt.connect("ESP32Smart",mqttUser,mqttPassword)){
+
     mqtt.subscribe(topicCmd);
+
     mqtt.publish(topicWelcome,"ESP32 online",true);
+
     sendRelayMsg();
     sendWiFiMsg();
+
     return true;
   }
 
@@ -261,20 +269,39 @@ bool connectMQTT(){
 }
 
 // ---------------- BLUETOOTH ----------------
-void startBT(){ if(btRunning) return; SerialBT.begin("RanjanaSmartHome"); btRunning=true; }
-void stopBT(){ if(!btRunning) return; SerialBT.end(); btRunning=false; }
+void startBT(){
+  if(btRunning) return;
+
+  SerialBT.begin("RanjanaSmartHome");
+
+  btRunning=true;
+}
+
+void stopBT(){
+  if(!btRunning) return;
+
+  SerialBT.end();
+
+  btRunning=false;
+}
 
 // ---------------- SWITCH ----------------
 void checkSwitch(){
+
   bool reading=digitalRead(SWITCH_PIN);
 
   if(reading!=lastSwitchState && millis()-lastSwitchTime>250){
+
     lastSwitchTime=millis();
     lastSwitchState=reading;
 
     if(reading==LOW){
-      if(state==WIFI_MODE || state==WIFI_START) state=WIFI_STOPPING;
-      else if(state==BT_MODE || state==BT_START) state=BT_STOPPING;
+
+      if(state==WIFI_MODE || state==WIFI_START)
+        state=WIFI_STOPPING;
+
+      else if(state==BT_MODE || state==BT_START)
+        state=BT_STOPPING;
     }
   }
 }
@@ -289,28 +316,35 @@ void runStateMachine(){
       Serial.println("Starting WiFi");
 
       if(connectWiFi()){
+
         Serial.print("Connected to ");
         Serial.println(WiFi.SSID());
 
         connectMQTT();
-        state=WIFI_MODE;
-      }
-      else state=WIFI_STOPPING;
 
-    break;
+        state=WIFI_MODE;
+
+      } else state=WIFI_STOPPING;
+
+      break;
 
     case WIFI_MODE:
 
       if(WiFi.status()!=WL_CONNECTED)
         state=WIFI_STOPPING;
+
       else{
+
         if(!mqtt.connected() && millis()-lastMQTTRetry>5000){
+
           connectMQTT();
+
           lastMQTTRetry=millis();
-        }
+
+        } else mqtt.loop();
       }
 
-    break;
+      break;
 
     case WIFI_STOPPING:
 
@@ -322,66 +356,41 @@ void runStateMachine(){
 
       delay(200);
 
-      state=BT_START;
+      state = BT_START;
 
-    break;
+      break;
 
     case BT_START:
 
       Serial.println("Bluetooth started");
 
       startBT();
+
       state=BT_MODE;
 
-    break;
+      break;
 
     case BT_MODE:
 
       while(SerialBT.available()){
+
         String cmd=SerialBT.readStringUntil('\n');
+
         handleCommand(cmd);
       }
 
-      if(SerialBT.hasClient() && btRunning) return;
-
-      if(millis()-lastWiFiScanBT>10000){
-
-        lastWiFiScanBT=millis();
-
-        int bestRSSI=-999;
-        int bestSaved=-1;
-
-        int n=WiFi.scanNetworks();
-
-        for(int i=0;i<n;i++){
-          String f=WiFi.SSID(i);
-          int r=WiFi.RSSI(i);
-
-          for(int j=0;j<NUM_WIFI;j++)
-            if(f==ssidList[j] && r>bestRSSI){
-              bestRSSI=r;
-              bestSaved=j;
-            }
-        }
-
-        if(bestSaved!=-1){
-          Serial.println("WiFi found, stopping Bluetooth...");
-          stopBT();
-          btStopTimer=millis();
-          state=BT_STOPPING;
-        }
-      }
-
-    break;
+      break;
 
     case BT_STOPPING:
 
       if(millis()-btStopTimer>200){
+
         Serial.println("Bluetooth stopped");
+
         state=WIFI_START;
       }
 
-    break;
+      break;
   }
 }
 
@@ -390,7 +399,10 @@ void setup(){
 
   Serial.begin(115200);
 
+  SerialBT.setTimeout(50);   // faster Bluetooth read
+
   pinMode(SWITCH_PIN,INPUT_PULLUP);
+
   pinMode(LED_WIFI,OUTPUT);
   pinMode(LED_MQTT,OUTPUT);
   pinMode(LED_BT,OUTPUT);
@@ -406,14 +418,12 @@ void setup(){
   for(int i=0;i<NUM_RELAYS;i++){
 
     char k[10];
+
     sprintf(k,"r%d",i);
+
     relayState[i]=prefs.getBool(k,false);
 
     digitalWrite(relayPins[i],relayState[i]?LOW:HIGH);
-
-    char dk[10];
-    sprintf(dk,"d%d",i);
-    usageDaily[i]=prefs.getULong(dk,0);
   }
 
   startupAnimation();
@@ -423,30 +433,38 @@ void setup(){
 void loop(){
 
   checkSwitch();
+
   runStateMachine();
+
   updateLEDs();
 
-  if(mqtt.connected()) mqtt.loop();   // faster MQTT processing
-
   if(millis()-lastTimerCheck>1000){
+
     checkTimers();
+
     lastTimerCheck=millis();
   }
 
   if(state==BT_MODE && SerialBT.hasClient() && millis()-lastBTSend>60000){
+
     sendRelayMsg();
+
     lastBTSend=millis();
   }
 
   if(state==WIFI_MODE && mqtt.connected() && millis()-lastUsageSend>60000){
+
     sendRelayMsg();
+
     lastUsageSend=millis();
   }
 
   if(state==WIFI_MODE && mqtt.connected() && millis()-lastWiFiSend>30000){
+
     sendWiFiMsg();
+
     lastWiFiSend=millis();
   }
 
-  delay(10);
+  delay(1);   // changed from 20ms
 }
