@@ -147,6 +147,7 @@ class MyServerCallbacks: public NimBLEServerCallbacks {
 
 };
 
+void handleCommand(String cmd);
 class MyCallbacks: public NimBLECharacteristicCallbacks {
 
   void onWrite(NimBLECharacteristic *pCharacteristic) {
@@ -394,9 +395,11 @@ NimBLEDevice::setPower(ESP_PWR_LVL_P9);
           NIMBLE_PROPERTY::NOTIFY
       );
 
-  pTxCharacteristic->addDescriptor(
-      new NimBLE2902()
-  );
+ pTxCharacteristic->createDescriptor(
+    "2902",
+    NIMBLE_PROPERTY::READ |
+    NIMBLE_PROPERTY::WRITE
+);
 
   pRxCharacteristic =
       pService->createCharacteristic(
