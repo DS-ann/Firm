@@ -2,9 +2,6 @@
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <NimBLEDevice.h>
-#include <NimBLEUtils.h>
-#include <NimBLEServer.h>
-#include <NimBLE2902.h>
 // ---------------- WIFI LIST ----------------
 #define NUM_WIFI 4
 const char* ssidList[NUM_WIFI] = {"Lenovo","vivo Y15s","POCO5956","TPLink"};
@@ -381,6 +378,7 @@ void startBLE(){
   if(bleRunning) return;
 
   NimBLEDevice::init("RanjanaSmartHome");
+NimBLEDevice::setPower(ESP_PWR_LVL_P9);
    NimBLEDevice::setMTU(247);
 
   pServer = NimBLEDevice::createServer();
@@ -617,7 +615,6 @@ void setup(){
 
   Serial.begin(115200);
 
-NimBLEDevice::setPower(ESP_PWR_LVL_P9);
 
   pinMode(SWITCH_PIN,INPUT_PULLUP);
   pinMode(LED_WIFI,OUTPUT);
