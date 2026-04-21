@@ -1,7 +1,8 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
-#include <NimBLEDevice.h>
+#include <BluetoothSerial.h>
+
 // ---------------- WIFI LIST ----------------
 #define NUM_WIFI 4
 const char* ssidList[NUM_WIFI] = {"Lenovo","vivo Y15s","POCO5956","TPLink"};
@@ -46,11 +47,10 @@ SystemState state = WIFI_START;
 // ---------------- SYSTEM ----------------
 WiFiClientSecure espClient;
 PubSubClient mqtt(espClient);
+BluetoothSerial SerialBT;
+bool btRunning=false;
 bool wifiScanRunning = false;
 int scanResultCount = 0;
-// -------- AUTO SYNC --------
-
-bool syncRequested = false;
 
 // ---------------- TIMERS ----------------
 unsigned long lastWiFiSend=0;
@@ -64,114 +64,6 @@ bool blinkState=false;
 unsigned long lastScanDone = 0;
 unsigned long btStopTimer=0;
 unsigned long lastDailyReset = 0;
-
-// ---------------- NIMBLE ----------------
-
-#define SERVICE_UUID        "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-#define CHARACTERISTIC_TX   "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
-#define CHARACTERISTIC_RX   "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
-
-NimBLEServer* pServer = nullptr;
-NimBLECharacteristic* pTxCharacteristic;
-NimBLECharacteristic* pRxCharacteristic;
-
-bool bleRunning=false;
-bool deviceConnected=false;
-
-// -------- MULTI CLIENT SUPPORT --------
-
-#define MAX_BLE_CLIENTS 5
-
-uint16_t connectedClients[MAX_BLE_CLIENTS];
-
-int clientCount = 0;
-
-
-//---------BLE CALLBACK-------
-class MyServerCallbacks: public NimBLEServerCallbacks {
-
-  void onConnect(NimBLEServer* pServer,
-                 ble_gap_conn_desc* desc){
-
-    if(clientCount < MAX_BLE_CLIENTS){
-
-      connectedClients[clientCount] =
-          desc->conn_handle;
-
-      clientCount++;
-
-      deviceConnected = true;
-      syncRequested = true;
-
-      Serial.print("BLE Client Connected: ");
-      Serial.println(clientCount);
-
-    }
-
-  }
-
-  void onDisconnect(NimBLEServer* pServer,
-                    ble_gap_conn_desc* desc){
-
-    uint16_t handle = desc->conn_handle;
-
-    for(int i=0;i<clientCount;i++){
-
-      if(connectedClients[i] == handle){
-
-        // Shift array
-        for(int j=i;j<clientCount-1;j++){
-
-          connectedClients[j] =
-              connectedClients[j+1];
-
-        }
-
-        clientCount--;
-
-        break;
-      }
-    }
-
-    if(clientCount == 0){
-
-      deviceConnected = false;
-
-    }
-
-    NimBLEDevice::startAdvertising();
-
-    Serial.print("BLE Client Disconnected: ");
-    Serial.println(clientCount);
-  }
-
-};
-
-void handleCommand(String cmd);
-class MyCallbacks: public NimBLECharacteristicCallbacks {
-
-  void onWrite(NimBLECharacteristic *pCharacteristic) {
-
-    std::string rxValue = pCharacteristic->getValue();
-
-    if(rxValue.length() > 0){
-
-      String cmd = "";
-
-      for(int i=0;i<rxValue.length();i++){
-
-        cmd += (char)rxValue[i];
-
-      }
-
-      handleCommand(cmd);
-
-    }
-
-  }
-
-};
-
 
 // ---------------- STARTUP ----------------
 void startupAnimation(){
@@ -187,7 +79,7 @@ void updateLEDs(){
   if(millis()-lastBlink>500){ blinkState=!blinkState; lastBlink=millis(); }
   digitalWrite(LED_WIFI,(state==WIFI_START)?blinkState:(state==WIFI_MODE?(WiFi.status()!=WL_CONNECTED?blinkState:HIGH):LOW));
   digitalWrite(LED_MQTT,(state==WIFI_MODE)?(mqtt.connected()?HIGH:blinkState):LOW);
-  digitalWrite(LED_BT,(state==BT_MODE)?(deviceConnected?HIGH:blinkState):LOW);
+  digitalWrite(LED_BT,(state==BT_MODE)?(SerialBT.hasClient()?HIGH:blinkState):LOW);
 }
 // ---------------- UPDATE ACTIVE USAGE ----------------
 void updateActiveUsage(){
@@ -213,17 +105,15 @@ void updateActiveUsage(){
 //-------- 24 hour reset--------
 void checkDailyReset(){
 
-  unsigned long now = millis();
+  if(millis() - lastDailyReset >= 86400000UL){
 
-  while(now - lastDailyReset >= 86400000UL){
-
-    updateActiveUsage();
+    updateActiveUsage();   
 
     for(int i=0;i<NUM_RELAYS;i++){
       usageDaily[i] = 0;
     }
 
-    lastDailyReset += 86400000UL;
+    lastDailyReset = millis();
 
     Serial.println("Daily usage reset");
   }
@@ -255,11 +145,7 @@ void sendRelayMsg(){
           relayTimers[0]/60000,relayTimers[1]/60000,relayTimers[2]/60000,relayTimers[3]/60000,
           usageDaily[0]/60000,usageDaily[1]/60000,usageDaily[2]/60000,usageDaily[3]/60000);
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf,true);
- if(bleRunning && deviceConnected){
-
-  bleQueuePush(buf);
-
-}
+  if(btRunning && SerialBT.hasClient()) SerialBT.println(buf);
 
   // Next 4 relays -> label 'b'
   sprintf(buf,"b:R%1d%1d%1d%1d,T%lu,%lu,%lu,%lu,D%lu,%lu,%lu,%lu",
@@ -267,27 +153,13 @@ void sendRelayMsg(){
           relayTimers[4]/60000,relayTimers[5]/60000,relayTimers[6]/60000,relayTimers[7]/60000,
           usageDaily[4]/60000,usageDaily[5]/60000,usageDaily[6]/60000,usageDaily[7]/60000);
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicUpdate,buf,true);
- if(bleRunning && deviceConnected){
-
-  bleQueuePush(buf);
-
-}
+  if(btRunning && SerialBT.hasClient()) SerialBT.println(buf);
 }
 
 // ---------------- SEND WIFI ----------------
 void sendWiFiMsg(){
   char buf[50]; sprintf(buf,"S%s,R%d",WiFi.SSID().c_str(),WiFi.RSSI());
   if(state==WIFI_MODE && mqtt.connected()) mqtt.publish(topicWifi,buf);
-}
-
-// -------- FULL STATE SYNC --------
-
-void sendFullStateSync(){
-
-  Serial.println("Sending Full State Sync");
-
-  sendRelayMsg();   // sends both 'a' and 'b'
-
 }
 
 // ---------------- SEND STATUS ----------------
@@ -374,79 +246,8 @@ bool connectMQTT(){
 }
 
 // ---------------- BLUETOOTH ----------------
-void startBLE(){
-
-  if(bleRunning) return;
-
-  NimBLEDevice::init("RanjanaSmartHome");
-NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-   NimBLEDevice::setMTU(247);
-
-  pServer = NimBLEDevice::createServer();
-
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  NimBLEService* pService =
-      pServer->createService(SERVICE_UUID);
-
-  pTxCharacteristic =
-      pService->createCharacteristic(
-          CHARACTERISTIC_TX,
-          NIMBLE_PROPERTY::NOTIFY
-      );
-
- pTxCharacteristic->createDescriptor(
-    "2902",
-    NIMBLE_PROPERTY::READ |
-    NIMBLE_PROPERTY::WRITE
-);
-
-  pRxCharacteristic =
-      pService->createCharacteristic(
-          CHARACTERISTIC_RX,
-          NIMBLE_PROPERTY::WRITE
-      );
-
-  pRxCharacteristic->setCallbacks(
-      new MyCallbacks()
-  );
-
-  pService->start();
-
-  NimBLEAdvertising* pAdvertising =
-      NimBLEDevice::getAdvertising();
-NimBLEDevice::setSecurityAuth(false, false, false);
-
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-
-NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-
-pServer->getAdvertising()
-        ->setMaxInterval(40);
-
-pServer->getAdvertising()
-        ->setMinInterval(20);
-
-  pAdvertising->start();
-
-  bleRunning=true;
-
-  Serial.println("BLE started");
-
-}
-void stopBLE(){
-
-  if(!bleRunning) return;
-
-  NimBLEDevice::deinit(true);
-
-  bleRunning=false;
-
-  deviceConnected=false;
-
-  Serial.println("BLE stopped");
-
-}
+void startBT(){ if(btRunning) return; SerialBT.begin("RanjanaSmartHome"); btRunning=true; }
+void stopBT(){ if(!btRunning) return; SerialBT.end(); btRunning=false; }
 
 // ---------------- SWITCH ----------------
 void checkSwitch(){
@@ -482,29 +283,28 @@ void runStateMachine(){
 
     case BT_START:
       Serial.println("Bluetooth started");
-      startBLE(); state=BT_MODE;
+      startBT(); state=BT_MODE;
       break;
 
  case BT_MODE:
 
- 
+  // 1. Handle Bluetooth commands
+  while(SerialBT.available()){String cmd = SerialBT.readStringUntil('\n');
+
+if(cmd.length() > 0){
+  handleCommand(cmd);
+}
+  }
 
   // 2. Start async WiFi scan
-  if(!deviceConnected &&
-   !wifiScanRunning &&
-   millis() - lastScanDone > 15000)
-{
-  WiFi.mode(WIFI_STA);
-
-  // IMPORTANT: clear old WiFi state
-  WiFi.disconnect(false);
-
-  delay(100);
-
-  WiFi.scanNetworks(true, false);
-
-  wifiScanRunning = true;
-}
+  if(!SerialBT.hasClient() &&
+     !wifiScanRunning &&
+     millis() - lastScanDone > 15000)
+  {
+    WiFi.mode(WIFI_STA);       
+WiFi.scanNetworks(true, false);
+      wifiScanRunning = true;
+  }
 
   // 3. Check scan result
   if(wifiScanRunning){
@@ -538,7 +338,7 @@ void runStateMachine(){
 
     if(bestSaved != -1){
       Serial.println("WiFi found → switching to WiFi mode");
-      stopBLE();
+      stopBT();
       btStopTimer = millis();
       state = BT_STOPPING;
     }
@@ -556,68 +356,12 @@ void runStateMachine(){
   }
 }
 
-// ---------------- BLE QUEUE BUFFER ----------------
-
-#define BLE_QUEUE_SIZE 30
-#define BLE_MSG_SIZE   120
-
-char bleQueue[BLE_QUEUE_SIZE][BLE_MSG_SIZE];
-
-volatile int bleHead = 0;
-volatile int bleTail = 0;
-
-
-// Add message to queue
-void bleQueuePush(const char* msg){
-
-  int next = (bleHead + 1) % BLE_QUEUE_SIZE;
-
-  if(next == bleTail){
-    // Queue full → drop oldest
-    bleTail = (bleTail + 1) % BLE_QUEUE_SIZE;
-  }
-
-  strncpy(bleQueue[bleHead], msg, BLE_MSG_SIZE-1);
-
-  bleQueue[bleHead][BLE_MSG_SIZE-1] = '\0';
-
-  bleHead = next;
-}
-
-
-// Send queued messages
-void processBLEQueue(){
-
-  if(!bleRunning) return;
-
-  if(clientCount == 0) return;
-
-  if(bleTail == bleHead) return;
-
-
-  pTxCharacteristic->setValue(
-      bleQueue[bleTail]
-  );
-
-
-  // Notify all clients
-  for(int i=0;i<clientCount;i++){
-
-    pTxCharacteristic->notify(
-        connectedClients[i]
-    );
-
-  }
-
-
-  bleTail = (bleTail + 1) % BLE_QUEUE_SIZE;
-}
-
 // ---------------- SETUP ----------------
 void setup(){
 
   Serial.begin(115200);
 
+  SerialBT.setTimeout(50); 
 
   pinMode(SWITCH_PIN,INPUT_PULLUP);
   pinMode(LED_WIFI,OUTPUT);
@@ -636,20 +380,12 @@ void setup(){
 }
 
   startupAnimation();
-lastDailyReset = millis();
 }
 // ---------------- LOOP ----------------
 void loop(){
-  checkSwitch(); runStateMachine(); updateLEDs();checkDailyReset();processBLEQueue();
- if(syncRequested){
-
-  syncRequested = false;
-
-  sendFullStateSync();
-
-}
- if(millis()-lastTimerCheck>1000){ checkTimers(); lastTimerCheck=millis(); }
-  if(state==BT_MODE && deviceConnected && millis()-lastBTSend>60000){
+  checkSwitch(); runStateMachine(); updateLEDs();checkDailyReset();
+  if(millis()-lastTimerCheck>1000){ checkTimers(); lastTimerCheck=millis(); }
+  if(state==BT_MODE && SerialBT.hasClient() && millis()-lastBTSend>60000){
 
   updateActiveUsage();  
 
