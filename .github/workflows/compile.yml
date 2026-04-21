@@ -1,17 +1,18 @@
-name: Build ESP32 Firmware
+name: Build ESP32-WROOM-32 Firmware
 
 on:
   push:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true   # Force Node.js 24 for actions
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
+
       # -------------------------
       # Checkout repository
       # -------------------------
@@ -27,46 +28,59 @@ jobs:
           sudo mv bin/arduino-cli /usr/local/bin/
 
       # -------------------------
-      # Setup Arduino CLI
+      # Configure ESP32 Core
       # -------------------------
-      - name: Setup Arduino CLI
+      - name: Setup ESP32 Core
         run: |
           arduino-cli config init
+
+          arduino-cli config add board_manager.additional_urls \
+          https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32
+
+          # Install stable ESP32 core with NimBLE
+          arduino-cli core install esp32:esp32@2.0.17
 
       # -------------------------
-      # Install required libraries
+      # Install Required Libraries
       # -------------------------
-      - name: Install required libraries
+      - name: Install Libraries
         run: |
-          for lib in "ArduinoJson" "PubSubClient" "ArduinoWebsockets" "Preferences" "NimBLE-Arduino" ; do
-            arduino-cli lib install "$lib"
-          done
+          arduino-cli lib update-index
+
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "PubSubClient"
+          arduino-cli lib install "ArduinoWebsockets"
 
       # -------------------------
-      # Compile firmware
+      # Compile Firmware
       # -------------------------
-      - name: Compile firmware
+      - name: Compile Firmware
         run: |
           arduino-cli compile \
-           --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+            --fqbn esp32:esp32:esp32:FlashMode=dio,FlashFreq=80,PartitionScheme=huge_app \
+            --build-property upload.maximum_size=3145728 \
             --output-dir build \
             .
 
       # -------------------------
-      # Prepare flash files
+      # Prepare Flash Files
       # -------------------------
-      - name: Prepare flash files
+      - name: Prepare Firmware Files
         run: |
           mkdir -p firmware
+
           cp build/*.bin firmware/
 
+          echo "Firmware files:"
+          ls firmware/
+
       # -------------------------
-      # Upload firmware as artifact
+      # Upload Firmware Artifact
       # -------------------------
-      - name: Upload firmware
+      - name: Upload Firmware
         uses: actions/upload-artifact@v5
         with:
-          name: esp32-firmware
+          name: esp32-wroom32-firmware
           path: firmware
