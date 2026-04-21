@@ -1,4 +1,4 @@
-name: Build ESP32-WROOM-32 Firmware
+name: Build ESP32 Firmware
 
 on:
   push:
@@ -28,7 +28,7 @@ jobs:
           sudo mv bin/arduino-cli /usr/local/bin/
 
       # -------------------------
-      # Configure ESP32 Core
+      # Setup ESP32 Core
       # -------------------------
       - name: Setup ESP32 Core
         run: |
@@ -39,16 +39,23 @@ jobs:
 
           arduino-cli core update-index
 
-          # Install stable ESP32 core with NimBLE
           arduino-cli core install esp32:esp32@2.0.17
 
       # -------------------------
-      # Install Required Libraries
+      # Install NimBLE manually
       # -------------------------
-      - name: Install Libraries
+      - name: Install NimBLE from GitHub
         run: |
-          arduino-cli lib update-index
+          mkdir -p ~/Arduino/libraries
+          cd ~/Arduino/libraries
 
+          git clone https://github.com/h2zero/NimBLE-Arduino.git
+
+      # -------------------------
+      # Install Other Libraries
+      # -------------------------
+      - name: Install required libraries
+        run: |
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "PubSubClient"
           arduino-cli lib install "ArduinoWebsockets"
@@ -56,31 +63,26 @@ jobs:
       # -------------------------
       # Compile Firmware
       # -------------------------
-      - name: Compile Firmware
+      - name: Compile firmware
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32:FlashMode=dio,FlashFreq=80,PartitionScheme=huge_app \
-            --build-property upload.maximum_size=3145728 \
+            --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
             --output-dir build \
             .
 
       # -------------------------
-      # Prepare Flash Files
+      # Prepare firmware files
       # -------------------------
-      - name: Prepare Firmware Files
+      - name: Prepare firmware
         run: |
           mkdir -p firmware
-
           cp build/*.bin firmware/
 
-          echo "Firmware files:"
-          ls firmware/
-
       # -------------------------
-      # Upload Firmware Artifact
+      # Upload artifact
       # -------------------------
-      - name: Upload Firmware
+      - name: Upload firmware
         uses: actions/upload-artifact@v5
         with:
-          name: esp32-wroom32-firmware
+          name: esp32-firmware
           path: firmware
