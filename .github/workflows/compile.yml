@@ -52,13 +52,12 @@ jobs:
           git clone https://github.com/h2zero/NimBLE-Arduino.git
 
       # -------------------------
-      # Install Other Libraries
+      # Install Required Libraries
       # -------------------------
       - name: Install required libraries
         run: |
-          arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "PubSubClient"
-          arduino-cli lib install "ArduinoWebsockets"
+          arduino-cli lib install "ESP32Servo"
 
       # -------------------------
       # Compile Firmware
