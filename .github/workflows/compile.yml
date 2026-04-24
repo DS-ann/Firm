@@ -13,75 +13,102 @@ jobs:
 
     steps:
 
-      # -------------------------
-      # Checkout repository
-      # -------------------------
-      - name: Checkout repository
-        uses: actions/checkout@v5
+    # -------------------------
+    # Checkout repository
+    # -------------------------
+    - name: Checkout repository
+      uses: actions/checkout@v5
 
-      # -------------------------
-      # Install Arduino CLI
-      # -------------------------
-      - name: Install Arduino CLI
-        run: |
+    # -------------------------
+    # Cache Arduino Core + Libraries
+    # -------------------------
+    - name: Cache Arduino files
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.arduino15
+          ~/Arduino
+        key: arduino-cache-${{ runner.os }}-esp32-2.0.17
+        restore-keys: |
+          arduino-cache-${{ runner.os }}
+
+    # -------------------------
+    # Install Arduino CLI
+    # -------------------------
+    - name: Install Arduino CLI
+      run: |
+        if ! command -v arduino-cli &> /dev/null
+        then
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
+        fi
 
-      # -------------------------
-      # Setup ESP32 Core
-      # -------------------------
-      - name: Setup ESP32 Core
-        run: |
-          arduino-cli config init
+    # -------------------------
+    # Setup ESP32 Core (only if missing)
+    # -------------------------
+    - name: Setup ESP32 Core
+      run: |
 
-          arduino-cli config add board_manager.additional_urls \
-          https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+        arduino-cli config init || true
 
-          arduino-cli core update-index
+        arduino-cli config add board_manager.additional_urls \
+        https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
 
+        arduino-cli core update-index
+
+        if ! arduino-cli core list | grep -q esp32
+        then
           arduino-cli core install esp32:esp32@2.0.17
+        fi
 
-      # -------------------------
-      # Install NimBLE manually
-      # -------------------------
-      - name: Install NimBLE from GitHub
-        run: |
-          mkdir -p ~/Arduino/libraries
+    # -------------------------
+    # Install NimBLE (only once)
+    # -------------------------
+    - name: Install NimBLE
+      run: |
+
+        mkdir -p ~/Arduino/libraries
+
+        if [ ! -d "~/Arduino/libraries/NimBLE-Arduino" ]
+        then
           cd ~/Arduino/libraries
-
           git clone https://github.com/h2zero/NimBLE-Arduino.git
+        fi
 
-      # -------------------------
-      # Install Required Libraries
-      # -------------------------
-      - name: Install required libraries
-        run: |
-          arduino-cli lib install "PubSubClient"
-          arduino-cli lib install "ESP32Servo"
+    # -------------------------
+    # Install Required Libraries
+    # -------------------------
+    - name: Install required libraries
+      run: |
 
-      # -------------------------
-      # Compile Firmware
-      # -------------------------
-      - name: Compile firmware
-        run: |
-          arduino-cli compile \
-            --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
-            --output-dir build \
-            .
+        arduino-cli lib install "PubSubClient" || true
+        arduino-cli lib install "ESP32Servo" || true
 
-      # -------------------------
-      # Prepare firmware files
-      # -------------------------
-      - name: Prepare firmware
-        run: |
-          mkdir -p firmware
-          cp build/*.bin firmware/
+    # -------------------------
+    # Compile Firmware
+    # -------------------------
+    - name: Compile firmware
+      run: |
 
-      # -------------------------
-      # Upload artifact
-      # -------------------------
-      - name: Upload firmware
-        uses: actions/upload-artifact@v5
-        with:
-          name: esp32-firmware
-          path: firmware
+        arduino-cli compile \
+          --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+          --output-dir build \
+          .
+
+    # -------------------------
+    # Prepare firmware files
+    # -------------------------
+    - name: Prepare firmware
+      run: |
+
+        mkdir -p firmware
+        cp build/*.bin firmware/
+
+    # -------------------------
+    # Upload artifact
+    # -------------------------
+    - name: Upload firmware
+      uses: actions/upload-artifact@v5
+      with:
+        name: esp32-firmware
+        path: firmware
