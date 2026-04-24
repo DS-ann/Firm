@@ -2,7 +2,6 @@
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <NimBLEDevice.h>
-#include <NimBLE2902.h>
 #include <ESP32Servo.h>
 #include <ESP32PWM.h>
 // ---------------- WIFI LIST ----------------
