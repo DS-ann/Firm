@@ -579,8 +579,14 @@ void stopBLE(){
 
   deviceConnected=false;
 
-  Serial.println("BLE stopped");
+  // Reset client tracking
+  clientCount = 0;
 
+  for(int i=0;i<MAX_BLE_CLIENTS;i++){
+      connectedClients[i] = 0;
+  }
+
+  Serial.println("BLE stopped");
 }
 
 // ---------------- SWITCH ----------------
