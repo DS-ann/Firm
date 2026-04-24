@@ -4,6 +4,7 @@
 #include <NimBLEDevice.h>
 #include <ESP32Servo.h>
 #include <ESP32PWM.h>
+#include <esp_task_wdt.h>
 // ---------------- WIFI LIST ----------------
 #define NUM_WIFI 4
 const char* ssidList[NUM_WIFI] = {"Lenovo","vivo Y15s","POCO5956","TPLink"};
@@ -980,6 +981,11 @@ fanSpeed[1] = 0;
 
   startupAnimation();
 lastDailyReset = millis();
+esp_task_wdt_init(10, true);
+esp_task_wdt_add(NULL);
+
+Serial.print("Reset reason: ");
+Serial.println(esp_reset_reason());
 }
 // ---------------- LOOP ----------------
 void loop(){
@@ -1010,4 +1016,5 @@ void loop(){
 }
   if(state==WIFI_MODE && mqtt.connected() && millis()-lastWiFiSend>30000){ sendWiFiMsg(); lastWiFiSend=millis(); }
   yield();
+esp_task_wdt_reset();
 }
