@@ -2,6 +2,7 @@
 #include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <NimBLEDevice.h>
+#include <NimBLE2902.h>
 #include <ESP32Servo.h>
 #include <ESP32PWM.h>
 // ---------------- WIFI LIST ----------------
@@ -896,7 +897,7 @@ void processBLEQueue(){
 
   static unsigned long lastSend = 0;
 
-  // ---- Rate limit BLE sending (VERY IMPORTANT) ----
+  // Rate limit
   if(millis() - lastSend < 20)
     return;
 
@@ -905,28 +906,33 @@ void processBLEQueue(){
   if(clientCount == 0) return;
   if(bleTail == bleHead) return;
 
-  // ---- Get message ----
   char* msg = bleQueue[bleTail];
 
-  // ---- MTU safety (avoid oversized packet issues) ----
   size_t len = strlen(msg);
 
-  if(len > 240){   // safe size for MTU 247
-    msg[240] = '\0';
+  // MTU safety
+  if(len > 240){
+    len = 240;
   }
 
-  // ---- Send to all connected clients ----
-  pTxCharacteristic->setValue(msg);
+  // Correct for NimBLE 3.x
+  pTxCharacteristic->setValue(
+      (uint8_t*)msg,
+      len
+  );
 
+  // Notify all clients
   for(int i = 0; i < clientCount; i++){
 
     if(connectedClients[i] != 0){
-      pTxCharacteristic->notify(connectedClients[i]);
-    }
 
+      pTxCharacteristic->notify(
+          connectedClients[i]
+      );
+
+    }
   }
 
-  // ---- Move queue forward ----
   bleTail = (bleTail + 1) % BLE_QUEUE_SIZE;
 
   lastSend = millis();
