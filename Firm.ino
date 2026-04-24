@@ -533,7 +533,7 @@ NimBLEDevice::setPower(ESP_PWR_LVL_P9);
     NIMBLE_PROPERTY::NOTIFY
 );
 
-pTxCharacteristic->addDescriptor(new NimBLE2902());
+
 
   pRxCharacteristic =
       pService->createCharacteristic(
