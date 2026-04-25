@@ -46,7 +46,8 @@ Servo fanServo1;
 Servo fanServo2;
 int fanServoAngle[5] = {0, 45, 90, 135, 180};
 #define FAN1_SERVO_PIN 14
-#define FAN2_SERVO_PIN 15
+#define FAN2_SERVO_PIN 32
+
 
 // ---------------- STATE MACHINE ----------------
 enum SystemState{
