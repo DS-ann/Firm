@@ -101,6 +101,7 @@ jobs:
         arduino-cli compile \
           --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
           --build-cache-path ~/.arduino15/cache \
+          --jobs 4 \
           --output-dir build \
           .
 
