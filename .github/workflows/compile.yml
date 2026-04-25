@@ -20,28 +20,31 @@ jobs:
       uses: actions/checkout@v5
 
     # -------------------------
-    # Cache Arduino Core + Libraries
+    # Cache Arduino Core + Libraries + Build Cache
     # -------------------------
-    - name: Cache Arduino files
+    - name: Cache Arduino data
       uses: actions/cache@v4
       with:
         path: |
           ~/.arduino15
           ~/Arduino
-        key: arduino-cache-${{ runner.os }}-esp32-2.0.17
+          ~/.cache
+        key: arduino-${{ runner.os }}-esp32-2.0.17-v1
         restore-keys: |
-          arduino-cache-${{ runner.os }}
+          arduino-${{ runner.os }}-esp32-2.0.17
 
     # -------------------------
     # Install Arduino CLI
     # -------------------------
     - name: Install Arduino CLI
       run: |
-        if ! command -v arduino-cli &> /dev/null
-        then
+
+        if ! command -v arduino-cli &> /dev/null; then
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
         fi
+
+        arduino-cli version
 
     # -------------------------
     # Setup ESP32 Core (only if missing)
@@ -56,33 +59,38 @@ jobs:
 
         arduino-cli core update-index
 
-        if ! arduino-cli core list | grep -q esp32
-        then
+        if ! arduino-cli core list | grep -q esp32; then
           arduino-cli core install esp32:esp32@2.0.17
+        else
+          echo "ESP32 core already installed"
         fi
 
     # -------------------------
-    # Install NimBLE (only once)
+    # Install NimBLE (cached safe)
     # -------------------------
     - name: Install NimBLE
       run: |
 
         mkdir -p ~/Arduino/libraries
 
-        if [ ! -d "~/Arduino/libraries/NimBLE-Arduino" ]
-        then
+        if [ ! -d ~/Arduino/libraries/NimBLE-Arduino ]; then
           cd ~/Arduino/libraries
           git clone https://github.com/h2zero/NimBLE-Arduino.git
+        else
+          echo "NimBLE already cached"
         fi
 
     # -------------------------
-    # Install Required Libraries
+    # Install Required Libraries (safe)
     # -------------------------
     - name: Install required libraries
       run: |
 
-        arduino-cli lib install "PubSubClient" || true
-        arduino-cli lib install "ESP32Servo" || true
+        arduino-cli lib list | grep -q PubSubClient || \
+          arduino-cli lib install "PubSubClient"
+
+        arduino-cli lib list | grep -q ESP32Servo || \
+          arduino-cli lib install "ESP32Servo"
 
     # -------------------------
     # Compile Firmware
@@ -92,6 +100,7 @@ jobs:
 
         arduino-cli compile \
           --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+          --build-cache-path ~/.arduino15/cache \
           --output-dir build \
           .
 
@@ -105,7 +114,7 @@ jobs:
         cp build/*.bin firmware/
 
     # -------------------------
-    # Upload artifact
+    # Upload firmware artifact
     # -------------------------
     - name: Upload firmware
       uses: actions/upload-artifact@v5
