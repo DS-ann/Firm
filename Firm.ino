@@ -1,5 +1,5 @@
 #include <WiFi.h>
-#include <PubSubClient.h> 
+#include <PubSubClient.h>
 #include <WiFiClientSecure.h>
 #include <NimBLEDevice.h>
 #include <ESP32Servo.h>
@@ -47,7 +47,6 @@ Servo fanServo2;
 int fanServoAngle[5] = {0, 45, 90, 135, 180};
 #define FAN1_SERVO_PIN 14
 #define FAN2_SERVO_PIN 32
-
 
 // ---------------- STATE MACHINE ----------------
 enum SystemState{
@@ -1010,7 +1009,7 @@ void loop(){
   updateActiveUsage();  
 
   sendRelayMsg();
-
+  sendFanMsg();
   lastBTSend=millis();
 }
  if(state==WIFI_MODE && mqtt.connected() && millis()-lastUsageSend>60000){
@@ -1018,6 +1017,7 @@ void loop(){
   updateActiveUsage();  
 
   sendRelayMsg();
+  sendFanMsg();
 
   lastUsageSend=millis();
 }
