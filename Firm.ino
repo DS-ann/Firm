@@ -197,7 +197,7 @@ void handleCommand(String cmd);
 
 class MyCallbacks: public NimBLECharacteristicCallbacks {
 
-  void onWrite(NimBLECharacteristic *pCharacteristic) override {
+  void onWrite(NimBLECharacteristic *pCharacteristic) {
 
     std::string rxValue = pCharacteristic->getValue();
 
@@ -596,7 +596,7 @@ void startBLE(){
   pAdvertising->setMaxInterval(40);
 
   // Allow scan response (improves discovery)
-  pAdvertising->setScanResponse(true);
+  //pAdvertising->setScanResponse(true);
 
   // Start advertising
   pAdvertising->start();
