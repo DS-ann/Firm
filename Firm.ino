@@ -1028,7 +1028,7 @@ fanSpeed[1] = 0;
 
   startupAnimation();
 lastDailyReset = millis();
-esp_task_wdt_init(10, true);
+esp_task_wdt_init(30, true);
 esp_task_wdt_add(NULL);
 
 Serial.print("Reset reason: ");
