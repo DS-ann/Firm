@@ -971,16 +971,12 @@ void processBLEQueue(){
     if(handle == 0) continue;
 
     // 🔥 VERY IMPORTANT: check client still valid
-    if(pServer->getPeerInfo(handle)){
+    bool ok = pTxCharacteristic->notify(handle);
 
-      bool ok = pTxCharacteristic->notify(handle);
-
-      if(!ok){
-        Serial.print("Notify failed for: ");
-        Serial.println(handle);
-      }
-
-    }
+if(!ok){
+  Serial.print("Notify failed for: ");
+  Serial.println(handle);
+}
   }
 
   // Move queue forward
