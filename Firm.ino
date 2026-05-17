@@ -901,7 +901,8 @@ delay(100);
   }
 
   break;
-
+}
+}
 // ---------------- BLE QUEUE BUFFER ----------------
 
 #define BLE_QUEUE_SIZE 30
