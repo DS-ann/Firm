@@ -894,6 +894,8 @@ case BT_STOPPING:
 
   state = WIFI_START;   // reuse your WiFi scan handler
   break;
+  }
+}
 // ---------------- BLE QUEUE BUFFER ----------------
 
 #define BLE_QUEUE_SIZE 30
