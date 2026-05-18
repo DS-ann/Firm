@@ -97,8 +97,8 @@ unsigned long lastWiFiCheck = 0;
 #define CHARACTERISTIC_RX   "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 
 NimBLEServer* pServer = nullptr;
-NimBLECharacteristic* pTxCharacteristic;
-NimBLECharacteristic* pRxCharacteristic;
+NimBLECharacteristic* pTxCharacteristic = nullptr;
+NimBLECharacteristic* pRxCharacteristic = nullptr;
 
 bool bleRunning = false;
 bool deviceConnected = false;
@@ -117,7 +117,6 @@ void removeClient(uint16_t handle){
 
     if(connectedClients[i] == handle){
 
-      // shift left
       for(int j = i; j < clientCount - 1; j++){
         connectedClients[j] = connectedClients[j + 1];
       }
@@ -130,6 +129,9 @@ void removeClient(uint16_t handle){
 
   if(clientCount == 0){
     deviceConnected = false;
+
+    // 🔥 CRITICAL: trigger WiFi scan immediately
+    lastWiFiCheck = 0;
   }
 }
 
@@ -137,7 +139,7 @@ void removeClient(uint16_t handle){
 //--------- BLE CALLBACK -------
 class MyServerCallbacks: public NimBLEServerCallbacks {
 
-  void onConnect(NimBLEServer* pServer, NimBLEConnInfo &connInfo){
+  void onConnect(NimBLEServer* server, NimBLEConnInfo &connInfo){
 
     uint16_t handle = connInfo.getConnHandle();
 
@@ -147,7 +149,7 @@ class MyServerCallbacks: public NimBLEServerCallbacks {
     // limit clients
     if(clientCount >= MAX_BLE_CLIENTS){
       Serial.println("Max clients reached → disconnect");
-      pServer->disconnect(handle);
+      server->disconnect(handle);
       return;
     }
 
@@ -156,19 +158,20 @@ class MyServerCallbacks: public NimBLEServerCallbacks {
     deviceConnected = true;
     syncRequested = true;
 
-    // improve connection stability
-    pServer->updateConnParams(handle, 24, 48, 0, 60);
+    // improve stability
+    server->updateConnParams(handle, 24, 48, 0, 60);
 
     Serial.print("Total clients: ");
     Serial.println(clientCount);
 
-    // keep advertising ON (important for multi-connect)
-    pServer->getAdvertising()->start();
-   
+    Serial.println("Waiting for notify subscription...");
+
+    // keep advertising ON (multi-client support)
+    server->getAdvertising()->start();
   }
 
 
-  void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo){
+  void onDisconnect(NimBLEServer* server, NimBLEConnInfo& connInfo){
 
     uint16_t handle = connInfo.getConnHandle();
 
@@ -177,18 +180,16 @@ class MyServerCallbacks: public NimBLEServerCallbacks {
 
     removeClient(handle);
 
-    // small delay improves reconnect reliability
     delay(50);
 
-    // restart advertising properly
-    if(!pServer->getAdvertising()->isAdvertising()){
-    pServer->getAdvertising()->start();
-}
+    // restart advertising safely
+    if(!server->getAdvertising()->isAdvertising()){
+      server->getAdvertising()->start();
+    }
 
     Serial.print("Remaining clients: ");
     Serial.println(clientCount);
   }
-
 };
 
 
@@ -209,7 +210,10 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
       cmd += c;
     }
 
+    // 🔥 CLEAN INPUT (VERY IMPORTANT)
     cmd.trim();
+    cmd.replace("\n", "");
+    cmd.replace("\r", "");
 
     Serial.print("BLE RX: ");
     Serial.println(cmd);
@@ -542,26 +546,35 @@ bool connectMQTT(){
 }
 
 // ---------------- BLUETOOTH ----------------
+// ---------------- BLUETOOTH ----------------
 void startBLE(){
 
   if(bleRunning) return;
 
-  // 🔴 IMPORTANT: Stop WiFi to avoid radio conflict
+  Serial.println("Starting BLE...");
+
+  // 🔴 Stop WiFi (radio conflict fix)
   WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
-  delay(100);
+  delay(150);   // slightly increased for stability
+
+  // 🔴 Safety: deinit if already partially running
+  NimBLEDevice::deinit(true);
+  delay(50);
 
   NimBLEDevice::init("RanjanaSmartHome");
 
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   NimBLEDevice::setMTU(247);
 
-  // Optional (improves Android stability)
+  // Optional (no pairing)
   NimBLEDevice::setSecurityAuth(false, false, false);
 
+  // -------- SERVER --------
   pServer = NimBLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
+  // -------- SERVICE --------
   NimBLEService* pService =
       pServer->createService(SERVICE_UUID);
 
@@ -571,7 +584,7 @@ void startBLE(){
       NIMBLE_PROPERTY::NOTIFY
   );
 
-  // ⭐ REQUIRED for notifications to work on phones
+  // 🔥 REQUIRED for Android notification
   pTxCharacteristic->createDescriptor("2902");
 
   // -------- RX (WRITE) --------
@@ -591,21 +604,21 @@ void startBLE(){
 
   pAdvertising->addServiceUUID(SERVICE_UUID);
 
-  // Faster + more stable connection
+  // 🔥 Better connection stability
   pAdvertising->setMinInterval(20);
   pAdvertising->setMaxInterval(40);
 
-  // Allow scan response (improves discovery)
-  //pAdvertising->setScanResponse(true);
+  // 🔥 Helps Android discover faster
+  pAdvertising->setScanResponseData(
+      NimBLEAdvertisementData()
+  );
 
-  // Start advertising
   pAdvertising->start();
 
   bleRunning = true;
 
-  Serial.println("BLE started");
+  Serial.println("BLE started successfully");
 }
-
 
 // ---------------- STOP BLE ----------------
 void stopBLE(){
@@ -614,26 +627,37 @@ void stopBLE(){
 
   Serial.println("Stopping BLE...");
 
-  // Stop advertising safely
+  // 🔴 Stop advertising first
   if(pServer){
-    pServer->getAdvertising()->stop();
+    NimBLEAdvertising* adv = pServer->getAdvertising();
+    if(adv && adv->isAdvertising()){
+      adv->stop();
+    }
   }
 
-  delay(50);
+  delay(100);
 
+  // 🔴 Full deinit (important)
   NimBLEDevice::deinit(true);
 
+  delay(100);
+
+  // -------- RESET STATE --------
   bleRunning = false;
   deviceConnected = false;
 
-  // Reset clients
   clientCount = 0;
 
   for(int i = 0; i < MAX_BLE_CLIENTS; i++){
     connectedClients[i] = 0;
   }
 
-  Serial.println("BLE stopped");
+  // 🔥 ALSO reset pointers (important!)
+  pServer = nullptr;
+  pTxCharacteristic = nullptr;
+  pRxCharacteristic = nullptr;
+
+  Serial.println("BLE fully stopped");
 }
 
 // ---------------- SWITCH ----------------
@@ -826,20 +850,20 @@ delay(100);
 
 case BT_MODE:
 
-  // If any BLE client connected → do nothing, keep BLE stable
+  // If BLE client connected → stay in BLE
   if(deviceConnected){
-    lastWiFiCheck = millis();   // prevent scan trigger
+    lastWiFiCheck = millis();   // reset timer
     break;
   }
 
-  // Every 1 minute (only when idle)
-  if(millis() - lastWiFiCheck > 60000){
+  // Check every 1 minute (only when idle)
+  if(millis() - lastWiFiCheck > WIFI_CHECK_INTERVAL){
 
-    Serial.println("Idle 1 min → checking WiFi");
+    Serial.println("Idle → checking WiFi");
 
     lastWiFiCheck = millis();
 
-    // Stop BLE BEFORE scan (VERY IMPORTANT)
+    // Stop BLE first
     stopBLE();
 
     btStopTimer = millis();
@@ -852,57 +876,24 @@ case BT_MODE:
 
 case BT_STOPPING:
 
-  // Wait for BLE to fully stop
-  if(millis() - btStopTimer > 300){
-
-    Serial.println("BLE stopped → scanning WiFi");
-
-    // -------- SAFE WIFI SCAN --------
-    WiFi.disconnect(true, true);
-WiFi.mode(WIFI_STA);
-delay(100);
-
-    int result = WiFi.scanNetworks();
-
-    int bestRSSI = -999;
-    int bestSaved = -1;
-
-    for(int i = 0; i < result; i++){
-
-      String ssid = WiFi.SSID(i);
-      int rssi = WiFi.RSSI(i);
-
-      for(int j = 0; j < NUM_WIFI; j++){
-
-        if(ssid == ssidList[j] && rssi > bestRSSI){
-          bestRSSI = rssi;
-          bestSaved = j;
-        }
-      }
-    }
-
-    WiFi.scanDelete();
-
-    // -------- DECISION --------
-    if(bestSaved != -1){
-
-      Serial.println("WiFi found → switching to WiFi mode");
-
-      state = WIFI_START;
-    }
-    else{
-
-      Serial.println("No WiFi → returning to BLE");
-
-      startBLE();
-
-      state = BT_MODE;
-    }
+  // Wait for BLE shutdown
+  if(millis() - btStopTimer < 300){
+    break;
   }
 
+  Serial.println("BLE stopped → scanning WiFi");
+
+  // -------- SAFE WIFI INIT --------
+  WiFi.disconnect(true, true);
+  WiFi.mode(WIFI_STA);
+  delay(50);
+
+  // -------- NON-BLOCKING SCAN START --------
+  WiFi.scanNetworks(true);   // async
+  wifiScanActive = true;
+
+  state = WIFI_START;   // reuse your WiFi scan handler
   break;
-}
-}
 // ---------------- BLE QUEUE BUFFER ----------------
 
 #define BLE_QUEUE_SIZE 30
@@ -926,7 +917,6 @@ void bleQueuePush(const char* msg){
     bleTail = (bleTail + 1) % BLE_QUEUE_SIZE;
   }
 
-  // Safe copy
   strncpy(bleQueue[bleHead], msg, BLE_MSG_SIZE - 1);
   bleQueue[bleHead][BLE_MSG_SIZE - 1] = '\0';
 
@@ -934,53 +924,53 @@ void bleQueuePush(const char* msg){
 }
 
 
-
 // ---------------- SEND QUEUE ----------------
 void processBLEQueue(){
 
   static unsigned long lastSend = 0;
 
-  // Rate limit (avoid flooding BLE stack)
+  // Rate limit (important)
   if(millis() - lastSend < 20) return;
 
-  // Safety checks
   if(!bleRunning) return;
   if(pTxCharacteristic == nullptr) return;
   if(clientCount == 0) return;
   if(bleHead == bleTail) return;
 
   char* msg = bleQueue[bleTail];
-
   if(msg == nullptr) return;
 
   size_t len = strlen(msg);
-
   if(len == 0) return;
 
-  // MTU safety (NimBLE ~244 max)
   if(len > 240) len = 240;
 
-  // Set value once
+  // Set data
   pTxCharacteristic->setValue((uint8_t*)msg, len);
 
-  // Notify all connected clients safely
+  bool sentToAtLeastOne = false;
+
+  // Send to all clients
   for(int i = 0; i < clientCount; i++){
 
     uint16_t handle = connectedClients[i];
-
     if(handle == 0) continue;
 
-    // 🔥 VERY IMPORTANT: check client still valid
+    // 🔥 FIX: Don't use getPeerInfo (causing crash earlier)
     bool ok = pTxCharacteristic->notify(handle);
 
-if(!ok){
-  Serial.print("Notify failed for: ");
-  Serial.println(handle);
-}
+    if(ok){
+      sentToAtLeastOne = true;
+    } else {
+      Serial.print("Notify failed: ");
+      Serial.println(handle);
+    }
   }
 
-  // Move queue forward
-  bleTail = (bleTail + 1) % BLE_QUEUE_SIZE;
+  // Only remove message if at least one client received it
+  if(sentToAtLeastOne){
+    bleTail = (bleTail + 1) % BLE_QUEUE_SIZE;
+  }
 
   lastSend = millis();
 }
@@ -1036,33 +1026,73 @@ Serial.println(esp_reset_reason());
 }
 // ---------------- LOOP ----------------
 void loop(){
-  checkSwitch(); runStateMachine(); updateLEDs();checkDailyReset();processBLEQueue();
- if(syncRequested){
 
-  syncRequested = false;
+  checkSwitch();
+  runStateMachine();
+  updateLEDs();
+  checkDailyReset();
 
-  sendFullStateSync();
+  // 🔥 Always process BLE queue (important)
+  processBLEQueue();
 
-}
- if(millis()-lastTimerCheck>1000){ checkTimers(); lastTimerCheck=millis(); }
-  if(state==BT_MODE && deviceConnected && millis()-lastBTSend>60000){
+  // ---------------- SYNC AFTER CONNECT ----------------
+  if(syncRequested){
 
-  updateActiveUsage();  
+    // small delay ensures phone enables notifications
+    static unsigned long syncTime = millis();
 
-  sendRelayMsg();
-  sendFanMsg();
-  lastBTSend=millis();
-}
- if(state==WIFI_MODE && mqtt.connected() && millis()-lastUsageSend>60000){
+    if(millis() - syncTime > 300){   // 🔥 IMPORTANT DELAY
+      syncRequested = false;
+      sendFullStateSync();
+    }
+  }
 
-  updateActiveUsage();  
+  // ---------------- TIMER CHECK ----------------
+  if(millis() - lastTimerCheck > 1000){
+    checkTimers();
+    lastTimerCheck = millis();
+  }
 
-  sendRelayMsg();
-  sendFanMsg();
+  // ---------------- BLE PERIODIC UPDATE ----------------
+  if(state == BT_MODE && deviceConnected){
 
-  lastUsageSend=millis();
-}
-  if(state==WIFI_MODE && mqtt.connected() && millis()-lastWiFiSend>30000){ sendWiFiMsg(); lastWiFiSend=millis(); }
+    // 🔥 Faster updates (not 60s, too slow for BLE)
+    if(millis() - lastBTSend > 5000){
+
+      updateActiveUsage();
+
+      sendRelayMsg();
+      sendFanMsg();
+
+      lastBTSend = millis();
+    }
+  }
+
+  // ---------------- WIFI PERIODIC UPDATE ----------------
+  if(state == WIFI_MODE && mqtt.connected()){
+
+    if(millis() - lastUsageSend > 60000){
+
+      updateActiveUsage();
+
+      sendRelayMsg();
+      sendFanMsg();
+
+      lastUsageSend = millis();
+    }
+
+    if(millis() - lastWiFiSend > 30000){
+      sendWiFiMsg();
+      lastWiFiSend = millis();
+    }
+  }
+
+  // 🔥 EXTRA: BLE RECOVERY (VERY IMPORTANT)
+  if(state == BT_MODE && !deviceConnected && !bleRunning){
+    Serial.println("BLE stopped unexpectedly → restarting");
+    startBLE();
+  }
+
   yield();
-esp_task_wdt_reset();
+  esp_task_wdt_reset();
 }
