@@ -29,7 +29,7 @@ jobs:
           ~/.arduino15
           ~/Arduino
           ~/.cache
-        key: arduino-${{ runner.os }}-esp32-2.0.17-v1
+        key: arduino-${{ runner.os }}-esp32-2.0.17-v2
         restore-keys: |
           arduino-${{ runner.os }}-esp32-2.0.17
 
@@ -38,7 +38,6 @@ jobs:
     # -------------------------
     - name: Install Arduino CLI
       run: |
-
         if ! command -v arduino-cli &> /dev/null; then
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
           sudo mv bin/arduino-cli /usr/local/bin/
@@ -47,11 +46,10 @@ jobs:
         arduino-cli version
 
     # -------------------------
-    # Setup ESP32 Core (only if missing)
+    # Setup ESP32 Core
     # -------------------------
     - name: Setup ESP32 Core
       run: |
-
         arduino-cli config init || true
 
         arduino-cli config add board_manager.additional_urls \
@@ -66,11 +64,10 @@ jobs:
         fi
 
     # -------------------------
-    # Install NimBLE (cached safe)
+    # Install NimBLE
     # -------------------------
     - name: Install NimBLE
       run: |
-
         mkdir -p ~/Arduino/libraries
 
         if [ ! -d ~/Arduino/libraries/NimBLE-Arduino ]; then
@@ -81,11 +78,10 @@ jobs:
         fi
 
     # -------------------------
-    # Install Required Libraries (safe)
+    # Install Required Libraries
     # -------------------------
     - name: Install required libraries
       run: |
-
         arduino-cli lib list | grep -q PubSubClient || \
           arduino-cli lib install "PubSubClient"
 
@@ -97,7 +93,6 @@ jobs:
     # -------------------------
     - name: Compile firmware
       run: |
-
         arduino-cli compile \
           --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
           --build-cache-path ~/.arduino15/cache \
@@ -106,19 +101,50 @@ jobs:
           .
 
     # -------------------------
-    # Prepare firmware files
+    # Prepare firmware + merged bin
     # -------------------------
     - name: Prepare firmware
       run: |
 
         mkdir -p firmware
+
+        # Copy all .bin files
         cp build/*.bin firmware/
 
+        # Install esptool
+        pip install esptool
+
+        # Detect required files
+        BOOT=$(ls build/*bootloader*.bin | head -n 1)
+        PART=$(ls build/*partitions*.bin | head -n 1)
+        APP=$(ls build/*.ino.bin | head -n 1)
+
+        echo "Bootloader: $BOOT"
+        echo "Partition: $PART"
+        echo "App: $APP"
+
+        # Create merged firmware
+        esptool.py --chip esp32 merge_bin -o firmware/merged.bin \
+          0x1000 $BOOT \
+          0x8000 $PART \
+          0x10000 $APP
+
+        echo "Merged firmware created"
+
     # -------------------------
-    # Upload firmware artifact
+    # Upload ALL firmware files
     # -------------------------
-    - name: Upload firmware
+    - name: Upload firmware (all)
       uses: actions/upload-artifact@v5
       with:
         name: esp32-firmware
         path: firmware
+
+    # -------------------------
+    # Upload merged.bin separately (easy download)
+    # -------------------------
+    - name: Upload merged firmware
+      uses: actions/upload-artifact@v5
+      with:
+        name: esp32-merged
+        path: firmware/merged.bin
