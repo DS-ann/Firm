@@ -28,7 +28,7 @@ jobs:
           arduino-cli version
 
       # -------------------------
-      # Setup ESP32 Core
+      # Setup ESP32 Core (Latest)
       # -------------------------
       - name: Setup ESP32 Core
         run: |
@@ -38,7 +38,8 @@ jobs:
             https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
 
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32@2.0.17
+          arduino-cli core install esp32:esp32
+          arduino-cli core list
 
       # -------------------------
       # Install Libraries
@@ -47,10 +48,12 @@ jobs:
         run: |
           mkdir -p ~/Arduino/libraries
           cd ~/Arduino/libraries
+          rm -rf NimBLE-Arduino
           git clone https://github.com/h2zero/NimBLE-Arduino.git
 
       - name: Install required libraries
         run: |
+          arduino-cli lib update-index
           arduino-cli lib install "PubSubClient"
           arduino-cli lib install "ESP32Servo"
 
