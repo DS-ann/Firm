@@ -12,116 +12,113 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # -------------------------
+      # Checkout repository
+      # -------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
-    # -------------------------
-    # Checkout repository
-    # -------------------------
-    - name: Checkout repository
-      uses: actions/checkout@v5
+      # -------------------------
+      # Install Arduino CLI
+      # -------------------------
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          sudo mv bin/arduino-cli /usr/local/bin/
+          arduino-cli version
 
-    # -------------------------
-    # Install Arduino CLI
-    # -------------------------
-    - name: Install Arduino CLI
-      run: |
-        curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-        sudo mv bin/arduino-cli /usr/local/bin/
+      # -------------------------
+      # Setup ESP32 Core
+      # -------------------------
+      - name: Setup ESP32 Core
+        run: |
+          arduino-cli config init || true
 
-        arduino-cli version
+          arduino-cli config add board_manager.additional_urls \
+            https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
 
-    # -------------------------
-    # Setup ESP32 Core
-    # -------------------------
-    - name: Setup ESP32 Core
-      run: |
-        arduino-cli config init || true
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
 
-        arduino-cli config add board_manager.additional_urls \
-          https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
+      # -------------------------
+      # Install Libraries
+      # -------------------------
+      - name: Install NimBLE
+        run: |
+          mkdir -p ~/Arduino/libraries
+          cd ~/Arduino/libraries
+          git clone https://github.com/h2zero/NimBLE-Arduino.git
 
-        arduino-cli core update-index
+      - name: Install required libraries
+        run: |
+          arduino-cli lib install "PubSubClient"
+          arduino-cli lib install "ESP32Servo"
 
-        arduino-cli core install esp32:esp32@2.0.17
+      # -------------------------
+      # Compile Firmware
+      # -------------------------
+      - name: Compile firmware
+        run: |
+          mkdir -p build
 
-    # -------------------------
-    # Install NimBLE
-    # -------------------------
-    - name: Install NimBLE
-      run: |
-        mkdir -p ~/Arduino/libraries
-        cd ~/Arduino/libraries
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
+            --output-dir build \
+            .
 
-        git clone https://github.com/h2zero/NimBLE-Arduino.git
+      # -------------------------
+      # Show build files
+      # -------------------------
+      - name: Show build files
+        run: |
+          echo "==== BUILD FILES ===="
+          find build -type f
 
-    # -------------------------
-    # Install Required Libraries
-    # -------------------------
-    - name: Install required libraries
-      run: |
-        arduino-cli lib install "PubSubClient"
-        arduino-cli lib install "ESP32Servo"
+      # -------------------------
+      # Create merged firmware
+      # -------------------------
+      - name: Create merged firmware
+        run: |
+          set -e
 
-    # -------------------------
-    # Compile Firmware
-    # -------------------------
-    - name: Compile firmware
-      run: |
-        mkdir -p build
+          mkdir -p firmware
 
-        arduino-cli compile \
-          --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
-          --output-dir build \
-          .
+          # Copy generated binaries
+          find build -name "*.bin" -exec cp {} firmware/ \;
 
-    # -------------------------
-    # Show build output
-    # -------------------------
-    - name: Show build files
-      run: |
-        echo "==== BUILD FILES ===="
-        find build -type f
+          # Install esptool
+          python3 -m pip install --upgrade esptool
 
-    # -------------------------
-    # Create merged firmware
-    # -------------------------
-    - name: Create merged firmware
-      run: |
-        set -e
+          # Locate binaries
+          BOOT=$(find build -name "*bootloader*.bin" | head -n1)
+          PART=$(find build -name "*partitions*.bin" | head -n1)
+          APP=$(find build -name "*.ino.bin" | head -n1)
+          BOOTAPP=$(find ~/.arduino15 -name "boot_app0.bin" | head -n1)
 
-        mkdir -p firmware
+          echo "BOOT=$BOOT"
+          echo "PART=$PART"
+          echo "APP=$APP"
+          echo "BOOTAPP=$BOOTAPP"
 
-        # Copy all generated binaries
-        find build -name "*.bin" -exec cp {} firmware/ \;
+          test -f "$BOOT"
+          test -f "$PART"
+          test -f "$APP"
+          test -f "$BOOTAPP"
 
-        # Install esptool
-        python3 -m pip install --upgrade esptool
+          python3 -m esptool --chip esp32 merge_bin \
+            -o firmware/merged.bin \
+            0x1000 "$BOOT" \
+            0x8000 "$PART" \
+            0xe000 "$BOOTAPP" \
+            0x10000 "$APP"
 
-        # Locate files
-        BOOT=$(find build -name "*bootloader*.bin" | head -n1)
-        PART=$(find build -name "*partitions*.bin" | head -n1)
-        APP=$(find build -name "*.ino.bin" | head -n1)
+          ls -lh firmware
 
-        echo "BOOT=$BOOT"
-        echo "PART=$PART"
-        echo "APP=$APP"
-
-        test -f "$BOOT"
-        test -f "$PART"
-        test -f "$APP"
-
-        python3 -m esptool --chip esp32 merge_bin \
-          -o firmware/merged.bin \
-          0x1000 "$BOOT" \
-          0x8000 "$PART" \
-          0x10000 "$APP"
-
-        ls -lh firmware
-
-    # -------------------------
-    # Upload firmware
-    # -------------------------
-    - name: Upload firmware
-      uses: actions/upload-artifact@v4
-      with:
-        name: esp32-firmware
-        path: firmware
+      # -------------------------
+      # Upload firmware
+      # -------------------------
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-firmware
+          path: firmware
