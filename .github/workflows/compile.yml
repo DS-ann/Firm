@@ -37,7 +37,7 @@ jobs:
         arduino-cli config init || true
 
         arduino-cli config add board_manager.additional_urls \
-        https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
+          https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
 
         arduino-cli core update-index
 
@@ -74,7 +74,7 @@ jobs:
           .
 
     # -------------------------
-    # Debug build output
+    # Show build output
     # -------------------------
     - name: Show build files
       run: |
@@ -82,48 +82,46 @@ jobs:
         find build -type f
 
     # -------------------------
-    # Prepare firmware + merged bin
+    # Create merged firmware
     # -------------------------
-    - name: Prepare firmware
+    - name: Create merged firmware
       run: |
-
         set -e
 
         mkdir -p firmware
 
-        # Copy all build binaries
+        # Copy all generated binaries
         find build -name "*.bin" -exec cp {} firmware/ \;
 
         # Install esptool
-        pip install esptool
+        python3 -m pip install --upgrade esptool
 
-        # Detect files safely
-        BOOT=$(find build -name "*bootloader*.bin" | head -n 1)
-        PART=$(find build -name "*partitions*.bin" | head -n 1)
-        APP=$(find build -name "*.ino.bin" | head -n 1)
+        # Locate files
+        BOOT=$(find build -name "*bootloader*.bin" | head -n1)
+        PART=$(find build -name "*partitions*.bin" | head -n1)
+        APP=$(find build -name "*.ino.bin" | head -n1)
 
-        echo "BOOTLOADER: $BOOT"
-        echo "PARTITIONS: $PART"
-        echo "APP: $APP"
+        echo "BOOT=$BOOT"
+        echo "PART=$PART"
+        echo "APP=$APP"
 
-        # Check files exist
         test -f "$BOOT"
         test -f "$PART"
         test -f "$APP"
 
-        # Create merged firmware
-        esptool.py --chip esp32 merge_bin -o firmware/merged.bin \
+        python3 -m esptool --chip esp32 merge_bin \
+          -o firmware/merged.bin \
           0x1000 "$BOOT" \
           0x8000 "$PART" \
           0x10000 "$APP"
 
-        echo "Merged firmware created"
+        ls -lh firmware
 
     # -------------------------
-    # Upload all firmware files
+    # Upload firmware
     # -------------------------
     - name: Upload firmware
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v4
       with:
         name: esp32-firmware
         path: firmware
