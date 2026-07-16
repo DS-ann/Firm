@@ -28,34 +28,26 @@ jobs:
           arduino-cli version
 
       # -------------------------
-      # Setup ESP32 Core (Latest)
+      # Setup ESP32 Core (Pinned to 2.0.17)
       # -------------------------
       - name: Setup ESP32 Core
         run: |
           arduino-cli config init || true
-
           arduino-cli config add board_manager.additional_urls \
             https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
-
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32
+          arduino-cli core install esp32:esp32@2.0.17
           arduino-cli core list
 
       # -------------------------
-      # Install Libraries
+      # Install Pinned Libraries
       # -------------------------
-      - name: Install NimBLE
-        run: |
-          mkdir -p ~/Arduino/libraries
-          cd ~/Arduino/libraries
-          rm -rf NimBLE-Arduino
-          git clone https://github.com/h2zero/NimBLE-Arduino.git
-
       - name: Install required libraries
         run: |
           arduino-cli lib update-index
-          arduino-cli lib install "PubSubClient"
-          arduino-cli lib install "ESP32Servo"
+          arduino-cli lib install "NimBLE-Arduino@1.4.2"
+          arduino-cli lib install "PubSubClient@2.8.0"
+          arduino-cli lib install "ESP32Servo@1.1.2"
 
       # -------------------------
       # Compile Firmware
@@ -63,19 +55,10 @@ jobs:
       - name: Compile firmware
         run: |
           mkdir -p build
-
           arduino-cli compile \
             --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
             --output-dir build \
             .
-
-      # -------------------------
-      # Show build files
-      # -------------------------
-      - name: Show build files
-        run: |
-          echo "==== BUILD FILES ===="
-          find build -type f
 
       # -------------------------
       # Create merged firmware
@@ -83,30 +66,14 @@ jobs:
       - name: Create merged firmware
         run: |
           set -e
-
           mkdir -p firmware
-
-          # Copy generated binaries
           find build -name "*.bin" -exec cp {} firmware/ \;
-
-          # Install esptool
           python3 -m pip install --upgrade esptool
-
-          # Locate binaries
+          
           BOOT=$(find build -name "*bootloader*.bin" | head -n1)
           PART=$(find build -name "*partitions*.bin" | head -n1)
           APP=$(find build -name "*.ino.bin" | head -n1)
           BOOTAPP=$(find ~/.arduino15 -name "boot_app0.bin" | head -n1)
-
-          echo "BOOT=$BOOT"
-          echo "PART=$PART"
-          echo "APP=$APP"
-          echo "BOOTAPP=$BOOTAPP"
-
-          test -f "$BOOT"
-          test -f "$PART"
-          test -f "$APP"
-          test -f "$BOOTAPP"
 
           python3 -m esptool --chip esp32 merge_bin \
             -o firmware/merged.bin \
@@ -114,8 +81,6 @@ jobs:
             0x8000 "$PART" \
             0xe000 "$BOOTAPP" \
             0x10000 "$APP"
-
-          ls -lh firmware
 
       # -------------------------
       # Upload firmware
