@@ -981,7 +981,18 @@ fanSpeed[1] = 0;
 
   startupAnimation();
 lastDailyReset = millis();
-esp_task_wdt_init(10, true);
+// Core 3.x enables WDT automatically, so we must de-init it first to change settings
+esp_task_wdt_deinit(); 
+
+// Create the new configuration struct (10000 ms = 10 seconds)
+esp_task_wdt_config_t twdt_config = {
+  .timeout_ms = 10000, 
+  .idle_core_mask = (1 << 1) - 1, // Apply to Core 0 and Core 1
+  .trigger_panic = true,
+};
+
+// Initialize with the new structure
+esp_task_wdt_init(&twdt_config); 
 esp_task_wdt_add(NULL);
 
 Serial.print("Reset reason: ");
