@@ -16,7 +16,7 @@ jobs:
       # Checkout repository
       # -------------------------
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4 # Updated to stable v4
 
       # -------------------------
       # Install Arduino CLI
@@ -28,7 +28,7 @@ jobs:
           arduino-cli version
 
       # -------------------------
-      # Setup ESP32 Core (Pinned to 2.0.17)
+      # Setup ESP32 Core (Latest)
       # -------------------------
       - name: Setup ESP32 Core
         run: |
@@ -36,18 +36,20 @@ jobs:
           arduino-cli config add board_manager.additional_urls \
             https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json || true
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32@2.0.17
+          # Installs the latest stable version
+          arduino-cli core install esp32:esp32
           arduino-cli core list
 
       # -------------------------
-      # Install Pinned Libraries
+      # Install Latest Libraries
       # -------------------------
       - name: Install required libraries
         run: |
           arduino-cli lib update-index
-          arduino-cli lib install "NimBLE-Arduino@1.4.2"
-          arduino-cli lib install "PubSubClient@2.8.0"
-          arduino-cli lib install "ESP32Servo@1.1.2"
+          # Removed version pinning to pull the latest versions
+          arduino-cli lib install "NimBLE-Arduino"
+          arduino-cli lib install "PubSubClient"
+          arduino-cli lib install "ESP32Servo"
 
       # -------------------------
       # Compile Firmware
@@ -73,6 +75,7 @@ jobs:
           BOOT=$(find build -name "*bootloader*.bin" | head -n1)
           PART=$(find build -name "*partitions*.bin" | head -n1)
           APP=$(find build -name "*.ino.bin" | head -n1)
+          # Path to boot_app0.bin is handled automatically by the core installation
           BOOTAPP=$(find ~/.arduino15 -name "boot_app0.bin" | head -n1)
 
           python3 -m esptool --chip esp32 merge_bin \
