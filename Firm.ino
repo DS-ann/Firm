@@ -126,6 +126,8 @@ class MyServerCallbacks: public NimBLEServerCallbacks {
       Serial.print("BLE Client Connected: ");
       Serial.println(clientCount);
 
+      // --- ADD THIS LINE TO ALLOW MULTIPLE CONNECTIONS ---
+      NimBLEDevice::startAdvertising(); 
     }
 
   }
