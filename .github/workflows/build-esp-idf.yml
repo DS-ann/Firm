@@ -26,3 +26,14 @@ jobs:
           . /opt/esp/idf/export.sh
           idf.py set-target esp32
           idf.py build
+          esptool.py --chip esp32 merge_bin -o build/Firm_IDF-merged.bin --flash_mode dio --flash_freq 40m --flash_size 4MB 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/Firm_IDF.bin
+      - name: Upload firmware binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: Firm-IDF-firmware
+          path: |
+            build/Firm_IDF.bin
+            build/Firm_IDF-merged.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+          if-no-files-found: error
