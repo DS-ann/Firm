@@ -142,9 +142,23 @@ static void wifiEvent(void*,esp_event_base_t base,int32_t id,void*){ if(base==WI
 
 static int bestNetwork(){
     const char *ss[4]={CONFIG_FIRM_WIFI_SSID1,CONFIG_FIRM_WIFI_SSID2,CONFIG_FIRM_WIFI_SSID3,CONFIG_FIRM_WIFI_SSID4}; wifi_scan_config_t sc={}; sc.show_hidden=false;
-    if(esp_wifi_scan_start(&sc,true)!=ESP_OK) return -1; uint16_t count=0; esp_wifi_scan_get_ap_num(&count); if(!count) return -1;
-    std::vector<wifi_ap_record_t> aps(count); esp_wifi_scan_get_ap_records(&count,aps.data()); int best=-1,bestRssi=-127;
-    for(uint16_t i=0;i<count;i++) for(int j=0;j<4;j++) if(ss[j][0] && strcmp((char*)aps[i].ssid,ss[j])==0 && aps[i].rssi>bestRssi){bestRssi=aps[i].rssi;best=j;} return best;
+    if(esp_wifi_scan_start(&sc,true)!=ESP_OK) return -1;
+    uint16_t count=0;
+    esp_wifi_scan_get_ap_num(&count);
+    if(!count) return -1;
+    std::vector<wifi_ap_record_t> aps(count);
+    esp_wifi_scan_get_ap_records(&count,aps.data());
+    int best=-1;
+    int bestRssi=-127;
+    for(uint16_t i=0;i<count;i++) {
+        for(int j=0;j<4;j++) {
+            if(ss[j][0] && strcmp((char*)aps[i].ssid,ss[j])==0 && aps[i].rssi>bestRssi) {
+                bestRssi=aps[i].rssi;
+                best=j;
+            }
+        }
+    }
+    return best;
 }
 
 static void connectNetwork(int idx){
@@ -177,9 +191,19 @@ static int bleInitServices(){
 }
 
 static void bleSync(){
-    if(ble_hs_id_infer_auto(0,&bleAddrType)!=0) return; ble_svc_gap_device_name_set("RanjanaSmartHome");
-    struct ble_hs_adv_fields f={}; f.flags=BLE_HS_ADV_F_DISC_GEN|BLE_HS_ADV_F_BREDR_UNSUP; const char *name="RanjanaSmartHome"; f.name=(uint8_t*)name; f.name_len=strlen(name); f.name_is_complete=1;
-    f.uuids128=(ble_uuid128_t*)&SERVICE_UUID; f.num_uuids128=1; f.uuids128_is_complete=1; ble_gap_adv_set_fields(&f); bleReady=true;
+    if(ble_hs_id_infer_auto(0,&bleAddrType)!=0) return;
+    ble_svc_gap_device_name_set("RanjanaSmartHome");
+    struct ble_hs_adv_fields f={};
+    f.flags=BLE_HS_ADV_F_DISC_GEN|BLE_HS_ADV_F_BREDR_UNSUP;
+    const char *name="RanjanaSmartHome";
+    f.name=(uint8_t*)name;
+    f.name_len=strlen(name);
+    f.name_is_complete=1;
+    f.uuids128=(ble_uuid128_t*)&SERVICE_UUID;
+    f.num_uuids128=1;
+    f.uuids128_is_complete=1;
+    ble_gap_adv_set_fields(&f);
+    bleReady=true;
 }
 
 static void bleHost(void*){ nimble_port_run(); nimble_port_freertos_deinit(); }
