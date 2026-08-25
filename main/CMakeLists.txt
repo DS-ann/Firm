@@ -3,3 +3,5 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES driver esp_event esp_netif esp_wifi mqtt nvs_flash bt
 )
+
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=misleading-indentation)
