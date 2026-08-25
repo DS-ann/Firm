@@ -2,35 +2,35 @@ menu "Firm ESP-IDF configuration"
 
 config FIRM_WIFI_SSID1
     string "Wi-Fi SSID 1"
-    default ""
+    default "Lenovo"
 
 config FIRM_WIFI_PASS1
     string "Wi-Fi password 1"
-    default ""
+    default "debarghya"
 
 config FIRM_WIFI_SSID2
     string "Wi-Fi SSID 2"
-    default ""
+    default "vivo Y15s"
 
 config FIRM_WIFI_PASS2
     string "Wi-Fi password 2"
-    default ""
+    default "debarghya1"
 
 config FIRM_WIFI_SSID3
     string "Wi-Fi SSID 3"
-    default ""
+    default "POCO5956"
 
 config FIRM_WIFI_PASS3
     string "Wi-Fi password 3"
-    default ""
+    default "debarghya2"
 
 config FIRM_WIFI_SSID4
     string "Wi-Fi SSID 4"
-    default ""
+    default "TPLink"
 
 config FIRM_WIFI_PASS4
     string "Wi-Fi password 4"
-    default ""
+    default "pass2"
 
 config FIRM_MQTT_URI
     string "MQTT URI"
@@ -38,10 +38,10 @@ config FIRM_MQTT_URI
 
 config FIRM_MQTT_USER
     string "MQTT username"
-    default ""
+    default "Debarghya_Sannigrahi"
 
 config FIRM_MQTT_PASSWORD
     string "MQTT password"
-    default ""
+    default "Dsann#5956"
 
 endmenu
