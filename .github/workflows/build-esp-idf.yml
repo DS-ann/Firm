@@ -9,7 +9,7 @@ on:
       - esp-idf-conversion
 
 env:
-  BLE_HARDENING_VERIFICATION: '1'
+  BLE_HARDENING_VERIFICATION: '2'
 
 jobs:
   build:
