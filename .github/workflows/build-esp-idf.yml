@@ -15,8 +15,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Initialize ESP-IDF environment
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          idf.py --version
       - name: Build native ESP-IDF firmware
         shell: bash
         run: |
+          . /opt/esp/idf/export.sh
           idf.py set-target esp32
           idf.py build
