@@ -1,0 +1,106 @@
+name: Apply BLE hardening
+
+on:
+  push:
+    branches: [esp-idf-conversion]
+    paths:
+      - 'main/main.cpp'
+      - '.github/workflows/apply-ble-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'Apply BLE hardening') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: esp-idf-conversion
+
+      - name: Patch BLE lifecycle
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('main/main.cpp')
+          s = p.read_text()
+
+          # Remove accidental duplicate declarations without touching any command,
+          # usage-reset, or configuration logic.
+          marker = 'static volatile bool bleResetPending=false;\n'
+          s = s.replace(marker, '')
+
+          # Per-client subscription synchronization. A connection can be established
+          # before the client enables notifications, so syncing on CONNECT alone can
+          # lose the initial state.
+          old = 'static bool notifyEnabled[MAX_BLE_CLIENTS]={};'
+          new = 'static bool notifyEnabled[MAX_BLE_CLIENTS]={};\nstatic bool bleSyncPending[MAX_BLE_CLIENTS]={};'
+          if old not in s:
+              raise SystemExit('notifyEnabled declaration not found')
+          s = s.replace(old, new, 1)
+
+          # Do not request the initial sync at CONNECT; wait for CCC/notification
+          # subscription, when the client is actually able to receive it.
+          old = 'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;clientCount++;syncRequested=true;if(bleRunning&&!bleStopping)startBLEAdvertising();'
+          new = 'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;bleSyncPending[clientCount]=false;clientCount++;if(bleRunning&&!bleStopping&&clientCount<MAX_BLE_CLIENTS)startBLEAdvertising();else if(clientCount>=MAX_BLE_CLIENTS)(void)ble_gap_adv_stop();'
+          if old not in s:
+              raise SystemExit('BLE CONNECT block not found')
+          s = s.replace(old, new, 1)
+
+          # Keep the per-client synchronization flag aligned while compacting slots.
+          old = 'connectedClients[i]=connectedClients[i+1];notifyEnabled[i]=notifyEnabled[i+1];'
+          new = 'connectedClients[i]=connectedClients[i+1];notifyEnabled[i]=notifyEnabled[i+1];bleSyncPending[i]=bleSyncPending[i+1];'
+          if old not in s:
+              raise SystemExit('BLE disconnect compaction block not found')
+          s = s.replace(old, new, 1)
+
+          old = 'connectedClients[clientCount-1]=INVALID_CONN_HANDLE;notifyEnabled[clientCount-1]=false;if(clientCount>0)clientCount--;'
+          new = 'connectedClients[clientCount-1]=INVALID_CONN_HANDLE;notifyEnabled[clientCount-1]=false;bleSyncPending[clientCount-1]=false;if(clientCount>0)clientCount--;'
+          if old not in s:
+              raise SystemExit('BLE disconnect tail block not found')
+          s = s.replace(old, new, 1)
+
+          # A notification subscription is the correct point to schedule initial
+          # state synchronization.
+          old = 'if(slot>=0&&event->subscribe.attr_handle==txHandle)notifyEnabled[slot]=event->subscribe.cur_notify;'
+          new = 'if(slot>=0&&event->subscribe.attr_handle==txHandle){notifyEnabled[slot]=event->subscribe.cur_notify;if(event->subscribe.cur_notify)bleSyncPending[slot]=true;else bleSyncPending[slot]=false;}'
+          if old not in s:
+              raise SystemExit('BLE SUBSCRIBE block not found')
+          s = s.replace(old, new, 1)
+
+          # Reject oversized BLE writes instead of silently truncating them.
+          old = 'uint16_t len=OS_MBUF_PKTLEN(ctxt->om);if(len>=sizeof(msg))len=sizeof(msg)-1;if(ble_hs_mbuf_to_flat(ctxt->om,msg,len,nullptr)!=0)return BLE_ATT_ERR_UNLIKELY;'
+          new = 'uint16_t len=OS_MBUF_PKTLEN(ctxt->om);if(len>=sizeof(msg))return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;if(ble_hs_mbuf_to_flat(ctxt->om,msg,len,nullptr)!=0)return BLE_ATT_ERR_UNLIKELY;'
+          if old not in s:
+              raise SystemExit('BLE access length block not found')
+          s = s.replace(old, new, 1)
+
+          # Process synchronization only after notification has been enabled.
+          old = 'if(syncRequested){syncRequested=false;sendFullStateSync();}'
+          new = 'if(syncRequested){syncRequested=false;}for(int i=0;i<MAX_BLE_CLIENTS;i++){if(bleSyncPending[i]&&connectedClients[i]!=INVALID_CONN_HANDLE&&notifyEnabled[i]){bleSyncPending[i]=false;sendFullStateSync();}}'
+          if old not in s:
+              raise SystemExit('main BLE sync block not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+
+      - name: Verify patch invariants
+        run: |
+          test "$(grep -c 'bleSyncPending' main/main.cpp)" -ge 6
+          test "$(grep -c 'static volatile bool bleResetPending' main/main.cpp)" -eq 0
+          grep -q 'BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN' main/main.cpp
+          grep -q 'clientCount<MAX_BLE_CLIENTS' main/main.cpp
+          git diff --check
+
+      - name: Commit BLE hardening
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add main/main.cpp
+          if git diff --cached --quiet; then
+            echo 'No BLE changes required.'
+            exit 0
+          fi
+          git commit -m 'Apply BLE hardening'
+          git push origin HEAD:esp-idf-conversion
