@@ -19,7 +19,7 @@ jobs:
         with:
           ref: esp-idf-conversion
 
-      - name: Patch BLE lifecycle
+      - name: Normalize BLE state declarations
         shell: python
         run: |
           from pathlib import Path
@@ -29,34 +29,25 @@ jobs:
           s = p.read_text()
           original = s
 
-          # Collapse every accidental duplicate of the reset flag to exactly one.
-          s = re.sub(
-              r'(?:static volatile bool bleResetPending=false;\s*)+',
-              'static volatile bool bleResetPending=false;\n',
-              s,
-          )
+          # Remove every generated copy first, then insert exactly one copy.
+          s = re.sub(r'^static volatile bool bleResetPending\s*=\s*false;\s*\n?', '', s, flags=re.MULTILINE)
+          s = re.sub(r'^static bool bleSyncPending\[MAX_BLE_CLIENTS\]\s*=\s*\{\};\s*\n?', '', s, flags=re.MULTILINE)
 
-          # Collapse duplicate per-client sync declarations and ensure one exists.
-          s = re.sub(
-              r'(?:static bool bleSyncPending\[MAX_BLE_CLIENTS\]=\{\};\s*)+',
-              '',
-              s,
-          )
           marker = 'static bool notifyEnabled[MAX_BLE_CLIENTS]={};'
           if marker not in s:
               raise SystemExit('notifyEnabled declaration not found')
+
           s = s.replace(
               marker,
-              marker + '\nstatic bool bleSyncPending[MAX_BLE_CLIENTS]={};',
+              marker + '\nstatic bool bleSyncPending[MAX_BLE_CLIENTS]={};\nstatic volatile bool bleResetPending=false;',
               1,
-          ) if 'static bool bleSyncPending[MAX_BLE_CLIENTS]={};' not in s else s
+          )
 
-          # Do not start state synchronization until the client has subscribed to TX.
+          # Do not start state synchronization until TX notifications are enabled.
           old = 'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;clientCount++;syncRequested=true;if(bleRunning&&!bleStopping)startBLEAdvertising();'
           new = 'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;bleSyncPending[clientCount]=false;clientCount++;if(bleRunning&&!bleStopping){if(clientCount<MAX_BLE_CLIENTS)startBLEAdvertising();else (void)ble_gap_adv_stop();}'
           s = s.replace(old, new, 1)
 
-          # Preserve pending-sync state when disconnecting clients are compacted.
           s = s.replace(
               'connectedClients[i]=connectedClients[i+1];notifyEnabled[i]=notifyEnabled[i+1];',
               'connectedClients[i]=connectedClients[i+1];notifyEnabled[i]=notifyEnabled[i+1];bleSyncPending[i]=bleSyncPending[i+1];',
@@ -67,41 +58,35 @@ jobs:
               'connectedClients[clientCount-1]=INVALID_CONN_HANDLE;notifyEnabled[clientCount-1]=false;bleSyncPending[clientCount-1]=false;',
               1,
           )
-
-          # Mark only the subscribing client as needing initial state.
           s = s.replace(
               'notifyEnabled[slot]=event->subscribe.cur_notify;if(notifyEnabled[slot])syncRequested=true;',
               'notifyEnabled[slot]=event->subscribe.cur_notify;bleSyncPending[slot]=event->subscribe.cur_notify;',
               1,
           )
-
-          # Reject oversized BLE writes rather than truncating them.
           s = s.replace(
               'uint16_t len=OS_MBUF_PKTLEN(ctxt->om);if(len>=sizeof(msg))len=sizeof(msg)-1;',
               'uint16_t len=OS_MBUF_PKTLEN(ctxt->om);if(len>=sizeof(msg))return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;',
               1,
           )
 
-          # Synchronize once when at least one subscribed client is pending.
           old_sync = 'if(syncRequested){syncRequested=false;sendFullStateSync();}'
           new_sync = 'bool bleSyncNeeded=false;for(int i=0;i<MAX_BLE_CLIENTS;i++){if(bleSyncPending[i]&&connectedClients[i]!=INVALID_CONN_HANDLE&&notifyEnabled[i]){bleSyncNeeded=true;break;}}if(bleSyncNeeded){for(int i=0;i<MAX_BLE_CLIENTS;i++)bleSyncPending[i]=false;syncRequested=false;sendFullStateSync();}'
           s = s.replace(old_sync, new_sync, 1)
 
           if s == original:
-              raise SystemExit('No BLE cleanup/lifecycle changes matched current main.cpp')
-
+              raise SystemExit('No BLE normalization change matched current main.cpp')
           p.write_text(s)
 
-      - name: Verify BLE patch
+      - name: Verify source
         run: |
-          test "$(grep -o 'static volatile bool bleResetPending=false;' main/main.cpp | wc -l)" -eq 1
-          test "$(grep -o 'static bool bleSyncPending\[MAX_BLE_CLIENTS\]={};' main/main.cpp | wc -l)" -eq 1
+          test "$(grep -cE '^static volatile bool bleResetPending[[:space:]]*=[[:space:]]*false;' main/main.cpp || true)" -eq 1
+          test "$(grep -cE '^static bool bleSyncPending\[MAX_BLE_CLIENTS\][[:space:]]*=[[:space:]]*\{\};' main/main.cpp || true)" -eq 1
           grep -q 'BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN' main/main.cpp
           grep -q 'bleSyncPending' main/main.cpp
           grep -q 'ble_gap_adv_stop' main/main.cpp
           git diff --check
 
-      - name: Commit BLE hardening
+      - name: Commit source fix
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
