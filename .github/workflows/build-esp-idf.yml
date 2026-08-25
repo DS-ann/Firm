@@ -8,6 +8,9 @@ on:
     branches:
       - esp-idf-conversion
 
+env:
+  BLE_HARDENING_VERIFICATION: '1'
+
 jobs:
   build:
     runs-on: ubuntu-latest
