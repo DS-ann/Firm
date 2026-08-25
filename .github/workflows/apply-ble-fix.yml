@@ -29,72 +29,73 @@ jobs:
           s = p.read_text()
           original = s
 
-          # Keep exactly one reset flag and one per-client sync flag.
-          s = re.sub(r'^static volatile bool bleResetPending=false;\s*\n', '', s, flags=re.MULTILINE)
-          s = re.sub(r'^static bool bleSyncPending\[MAX_BLE_CLIENTS\]=\{\};\s*\n', '', s, flags=re.MULTILINE)
+          # Collapse every accidental duplicate of the reset flag to exactly one.
+          s = re.sub(
+              r'(?:static volatile bool bleResetPending=false;\s*)+',
+              'static volatile bool bleResetPending=false;\n',
+              s,
+          )
+
+          # Collapse duplicate per-client sync declarations and ensure one exists.
+          s = re.sub(
+              r'(?:static bool bleSyncPending\[MAX_BLE_CLIENTS\]=\{\};\s*)+',
+              '',
+              s,
+          )
           marker = 'static bool notifyEnabled[MAX_BLE_CLIENTS]={};'
           if marker not in s:
               raise SystemExit('notifyEnabled declaration not found')
-          s = s.replace(marker, marker + '\nstatic bool bleSyncPending[MAX_BLE_CLIENTS]={};\nstatic volatile bool bleResetPending=false;', 1)
+          s = s.replace(
+              marker,
+              marker + '\nstatic bool bleSyncPending[MAX_BLE_CLIENTS]={};',
+              1,
+          ) if 'static bool bleSyncPending[MAX_BLE_CLIENTS]={};' not in s else s
 
           # Do not start state synchronization until the client has subscribed to TX.
-          s = s.replace(
-              'connectedClients[clientCount]=event->connect.conn_handle;\n      notifyEnabled[clientCount]=false;\n      clientCount++;\n      syncRequested=true;\n      if(bleRunning&&!bleStopping)startBLEAdvertising();',
-              'connectedClients[clientCount]=event->connect.conn_handle;\n      notifyEnabled[clientCount]=false;\n      bleSyncPending[clientCount]=false;\n      clientCount++;\n      if(bleRunning&&!bleStopping){\n        if(clientCount<MAX_BLE_CLIENTS)startBLEAdvertising();\n        else (void)ble_gap_adv_stop();\n      }', 1)
-
-          # Also support the compact one-line version if present.
-          s = s.replace(
-              'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;clientCount++;syncRequested=true;if(bleRunning&&!bleStopping)startBLEAdvertising();',
-              'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;bleSyncPending[clientCount]=false;clientCount++;if(bleRunning&&!bleStopping){if(clientCount<MAX_BLE_CLIENTS)startBLEAdvertising();else (void)ble_gap_adv_stop();}', 1)
+          old = 'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;clientCount++;syncRequested=true;if(bleRunning&&!bleStopping)startBLEAdvertising();'
+          new = 'connectedClients[clientCount]=event->connect.conn_handle;notifyEnabled[clientCount]=false;bleSyncPending[clientCount]=false;clientCount++;if(bleRunning&&!bleStopping){if(clientCount<MAX_BLE_CLIENTS)startBLEAdvertising();else (void)ble_gap_adv_stop();}'
+          s = s.replace(old, new, 1)
 
           # Preserve pending-sync state when disconnecting clients are compacted.
           s = s.replace(
               'connectedClients[i]=connectedClients[i+1];notifyEnabled[i]=notifyEnabled[i+1];',
-              'connectedClients[i]=connectedClients[i+1];notifyEnabled[i]=notifyEnabled[i+1];bleSyncPending[i]=bleSyncPending[i+1];', 1)
-          s = s.replace(
-              'connectedClients[clientCount]=INVALID_CONN_HANDLE;\n    notifyEnabled[clientCount]=false;',
-              'connectedClients[clientCount]=INVALID_CONN_HANDLE;\n    notifyEnabled[clientCount]=false;\n    bleSyncPending[clientCount]=false;', 1)
+              'connectedClients[i]=connectedClients[i+1];notifyEnabled[i]=notifyEnabled[i+1];bleSyncPending[i]=bleSyncPending[i+1];',
+              1,
+          )
           s = s.replace(
               'connectedClients[clientCount-1]=INVALID_CONN_HANDLE;notifyEnabled[clientCount-1]=false;',
-              'connectedClients[clientCount-1]=INVALID_CONN_HANDLE;notifyEnabled[clientCount-1]=false;bleSyncPending[clientCount-1]=false;', 1)
+              'connectedClients[clientCount-1]=INVALID_CONN_HANDLE;notifyEnabled[clientCount-1]=false;bleSyncPending[clientCount-1]=false;',
+              1,
+          )
 
-          # Mark only the subscribing client as needing its initial state. The main
-          # loop performs one broadcast when any newly subscribed client is pending,
-          # then clears all pending flags to avoid duplicate state bursts.
-          s = s.replace(
-              'notifyEnabled[slot]=event->subscribe.cur_notify;\n    if(notifyEnabled[slot])syncRequested=true;',
-              'notifyEnabled[slot]=event->subscribe.cur_notify;\n    bleSyncPending[slot]=event->subscribe.cur_notify;', 1)
+          # Mark only the subscribing client as needing initial state.
           s = s.replace(
               'notifyEnabled[slot]=event->subscribe.cur_notify;if(notifyEnabled[slot])syncRequested=true;',
-              'notifyEnabled[slot]=event->subscribe.cur_notify;bleSyncPending[slot]=event->subscribe.cur_notify;', 1)
-
-          # Reset callback must invalidate all client subscription state.
-          s = s.replace(
-              'for(int i=0;i<MAX_BLE_CLIENTS;i++){connectedClients[i]=INVALID_CONN_HANDLE;notifyEnabled[i]=false;}',
-              'for(int i=0;i<MAX_BLE_CLIENTS;i++){connectedClients[i]=INVALID_CONN_HANDLE;notifyEnabled[i]=false;bleSyncPending[i]=false;}', 1)
+              'notifyEnabled[slot]=event->subscribe.cur_notify;bleSyncPending[slot]=event->subscribe.cur_notify;',
+              1,
+          )
 
           # Reject oversized BLE writes rather than truncating them.
           s = s.replace(
               'uint16_t len=OS_MBUF_PKTLEN(ctxt->om);if(len>=sizeof(msg))len=sizeof(msg)-1;',
-              'uint16_t len=OS_MBUF_PKTLEN(ctxt->om);if(len>=sizeof(msg))return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;', 1)
+              'uint16_t len=OS_MBUF_PKTLEN(ctxt->om);if(len>=sizeof(msg))return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;',
+              1,
+          )
 
-          # Replace the old global sync trigger with one broadcast for all newly
-          # subscribed clients. This keeps the existing wire protocol unchanged.
-          old = 'if(syncRequested){syncRequested=false;sendFullStateSync();}'
-          new = 'bool bleSyncNeeded=false;for(int i=0;i<MAX_BLE_CLIENTS;i++){if(bleSyncPending[i]&&connectedClients[i]!=INVALID_CONN_HANDLE&&notifyEnabled[i]){bleSyncNeeded=true;break;}}if(bleSyncNeeded){for(int i=0;i<MAX_BLE_CLIENTS;i++)bleSyncPending[i]=false;syncRequested=false;sendFullStateSync();}'
-          if old in s:
-              s = s.replace(old, new, 1)
+          # Synchronize once when at least one subscribed client is pending.
+          old_sync = 'if(syncRequested){syncRequested=false;sendFullStateSync();}'
+          new_sync = 'bool bleSyncNeeded=false;for(int i=0;i<MAX_BLE_CLIENTS;i++){if(bleSyncPending[i]&&connectedClients[i]!=INVALID_CONN_HANDLE&&notifyEnabled[i]){bleSyncNeeded=true;break;}}if(bleSyncNeeded){for(int i=0;i<MAX_BLE_CLIENTS;i++)bleSyncPending[i]=false;syncRequested=false;sendFullStateSync();}'
+          s = s.replace(old_sync, new_sync, 1)
 
-          # If no old sync block exists, do not silently claim success.
           if s == original:
-              raise SystemExit('No BLE lifecycle changes matched current main.cpp')
+              raise SystemExit('No BLE cleanup/lifecycle changes matched current main.cpp')
 
           p.write_text(s)
 
       - name: Verify BLE patch
         run: |
-          test "$(grep -c 'static volatile bool bleResetPending' main/main.cpp || true)" -eq 1
-          test "$(grep -c 'static bool bleSyncPending' main/main.cpp || true)" -eq 1
+          test "$(grep -o 'static volatile bool bleResetPending=false;' main/main.cpp | wc -l)" -eq 1
+          test "$(grep -o 'static bool bleSyncPending\[MAX_BLE_CLIENTS\]={};' main/main.cpp | wc -l)" -eq 1
           grep -q 'BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN' main/main.cpp
           grep -q 'bleSyncPending' main/main.cpp
           grep -q 'ble_gap_adv_stop' main/main.cpp
