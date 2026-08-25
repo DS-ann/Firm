@@ -4,4 +4,4 @@ idf_component_register(
     REQUIRES driver esp_event esp_netif esp_wifi mqtt nvs_flash bt
 )
 
-target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=misleading-indentation)
+target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-error=misleading-indentation -include ${CMAKE_CURRENT_LIST_DIR}/forward_decls.h)
