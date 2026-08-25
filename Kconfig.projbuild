@@ -1,0 +1,47 @@
+menu "Firm ESP-IDF configuration"
+
+config FIRM_WIFI_SSID1
+    string "Wi-Fi SSID 1"
+    default ""
+
+config FIRM_WIFI_PASS1
+    string "Wi-Fi password 1"
+    default ""
+
+config FIRM_WIFI_SSID2
+    string "Wi-Fi SSID 2"
+    default ""
+
+config FIRM_WIFI_PASS2
+    string "Wi-Fi password 2"
+    default ""
+
+config FIRM_WIFI_SSID3
+    string "Wi-Fi SSID 3"
+    default ""
+
+config FIRM_WIFI_PASS3
+    string "Wi-Fi password 3"
+    default ""
+
+config FIRM_WIFI_SSID4
+    string "Wi-Fi SSID 4"
+    default ""
+
+config FIRM_WIFI_PASS4
+    string "Wi-Fi password 4"
+    default ""
+
+config FIRM_MQTT_URI
+    string "MQTT URI"
+    default "mqtts://5dba91287f8248c1a30195053d3862ed.s1.eu.hivemq.cloud:8883"
+
+config FIRM_MQTT_USER
+    string "MQTT username"
+    default ""
+
+config FIRM_MQTT_PASSWORD
+    string "MQTT password"
+    default ""
+
+endmenu
