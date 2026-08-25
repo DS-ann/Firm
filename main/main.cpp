@@ -63,6 +63,7 @@ static int fanSpeed[2]={0,0};
 static bool lastSwitchState=true,blinkState=false,wifiScanActive=false,syncRequested=false,wifiConnecting=false,wifiConnected=false,mqttConnected=false,mqttStarted=false,bleRunning=false,bleReady=false,bleStopping=false;
 static volatile bool bleResetPending=false;
 static volatile bool bleResetPending=false;
+static volatile bool bleResetPending=false;
 static uint64_t lastSwitchTime=0,lastWiFiSend=0,lastBTSend=0,lastMQTTRetry=0,lastTimerCheck=0,lastUsageSend=0,lastBlink=0,lastScanDone=0,btStopTimer=0,lastDailyReset=0,wifiConnectStart=0;
 static int wifiBestIndex=-1,wifiBestRSSI=-999,clientCount=0; static uint8_t bleAddrType=0; static uint16_t txHandle=0;
 static uint16_t connectedClients[MAX_BLE_CLIENTS]={INVALID_CONN_HANDLE,INVALID_CONN_HANDLE,INVALID_CONN_HANDLE,INVALID_CONN_HANDLE,INVALID_CONN_HANDLE};
