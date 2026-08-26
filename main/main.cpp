@@ -69,6 +69,7 @@ static bool notifyEnabled[MAX_BLE_CLIENTS]={};
 static bool bleSyncPending[MAX_BLE_CLIENTS]={};
 static volatile bool bleResetPending=false;
 
+
 static esp_mqtt_client_handle_t mqtt=nullptr; static QueueHandle_t bleQueue=nullptr;
 struct BleMessage{char data[BLE_MSG_SIZE];};
 enum SystemState{WIFI_START,WIFI_MODE,WIFI_STOPPING,BT_START,BT_MODE,BT_STOPPING}; static SystemState state=WIFI_START;
