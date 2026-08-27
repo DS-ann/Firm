@@ -8,8 +8,6 @@ on:
     branches:
       - esp-idf-conversion
 
-# The target board has 2 MB SPI flash. Keep the generated image and
-# partition layout consistent with the physical flash size.
 env:
   BLE_HARDENING_VERIFICATION: '2'
   ESP_FLASH_SIZE: 2MB
@@ -44,12 +42,14 @@ jobs:
           python3 - <<'PY'
           import csv
           import os
-          import struct
 
           flash_size = 0x200000
           app_offset = 0x10000
           app_path = 'build/Firm_IDF.bin'
-          part_path = 'build/partition_table/partition-table.csv'
+          # ESP-IDF generates partition-table.bin, but does not guarantee
+          # a generated partition-table.csv file. Validate the source CSV
+          # that was used to generate the partition table binary.
+          part_path = 'partitions.csv'
 
           app_size = os.path.getsize(app_path)
           if app_offset + app_size > flash_size:
@@ -92,7 +92,7 @@ jobs:
                   f'app={app_size}, partition={size}'
               )
 
-          print(f'2 MB flash verification OK')
+          print('2 MB flash verification OK')
           print(f'Factory partition: 0x{offset:x} + 0x{size:x}')
           print(f'Application size: {app_size} bytes')
           PY
