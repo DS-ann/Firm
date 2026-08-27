@@ -40,7 +40,7 @@ jobs:
             -f raw
 
       - name: Verify merged firmware
-        working-directory: wifi-repeater-espidf
+        working-directory: wifi-repeater-espidf/build
         run: |
           test -s wifi-repeater-esp32-merged.bin
           echo "Merged firmware size: $(stat -c%s wifi-repeater-esp32-merged.bin) bytes"
@@ -50,7 +50,7 @@ jobs:
         with:
           name: wifi-repeater-esp32-firmware
           path: |
-            wifi-repeater-espidf/wifi-repeater-esp32-merged.bin
+            wifi-repeater-espidf/build/wifi-repeater-esp32-merged.bin
             wifi-repeater-espidf/build/wifi_repeater.bin
             wifi-repeater-espidf/build/bootloader/bootloader.bin
             wifi-repeater-espidf/build/partition_table/partition-table.bin
