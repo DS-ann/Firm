@@ -1,0 +1,32 @@
+menu "Wi-Fi Repeater"
+
+config REPEATER_UPSTREAM_SSID
+    string "Phone hotspot SSID"
+    default "PHONE_HOTSPOT"
+    help
+        2.4 GHz SSID of the phone hotspot used as the upstream connection.
+
+config REPEATER_UPSTREAM_PASSWORD
+    string "Phone hotspot password"
+    default "CHANGE_ME"
+    help
+        Password for the upstream phone hotspot.
+
+config REPEATER_AP_SSID
+    string "Repeater AP SSID"
+    default "ESP32-Repeater"
+
+config REPEATER_AP_PASSWORD
+    string "Repeater AP password"
+    default "esp32repeater"
+    help
+        WPA2 password for clients connecting to the ESP32.
+
+config REPEATER_AP_CHANNEL
+    int "Repeater AP channel"
+    range 1 13
+    default 1
+    help
+        The AP follows the upstream channel once connected. This value is used initially.
+
+endmenu
