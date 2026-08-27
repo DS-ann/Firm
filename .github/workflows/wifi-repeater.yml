@@ -36,21 +36,21 @@ jobs:
         working-directory: wifi-repeater-espidf
         run: |
           idf.py merge-bin \
-            -o build/wifi-repeater-esp32-merged.bin \
+            -o wifi-repeater-esp32-merged.bin \
             -f raw
 
       - name: Verify merged firmware
         working-directory: wifi-repeater-espidf
         run: |
-          test -s build/wifi-repeater-esp32-merged.bin
-          echo "Merged firmware size: $(stat -c%s build/wifi-repeater-esp32-merged.bin) bytes"
+          test -s wifi-repeater-esp32-merged.bin
+          echo "Merged firmware size: $(stat -c%s wifi-repeater-esp32-merged.bin) bytes"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wifi-repeater-esp32-firmware
           path: |
-            wifi-repeater-espidf/build/wifi-repeater-esp32-merged.bin
+            wifi-repeater-espidf/wifi-repeater-esp32-merged.bin
             wifi-repeater-espidf/build/wifi_repeater.bin
             wifi-repeater-espidf/build/bootloader/bootloader.bin
             wifi-repeater-espidf/build/partition_table/partition-table.bin
