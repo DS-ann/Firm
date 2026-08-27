@@ -32,18 +32,43 @@ jobs:
           idf.py set-target esp32
           idf.py build
 
-      - name: Create merged firmware binary
+      - name: Validate application image
         working-directory: wifi-repeater-espidf
         run: |
+          python "$IDF_PATH/components/esptool_py/esptool/esptool.py" \
+            --chip esp32 image-info build/wifi_repeater.bin
+
+      - name: Create complete flash image
+        working-directory: wifi-repeater-espidf
+        run: |
+          rm -f build/wifi-repeater-esp32-merged.bin
           idf.py merge-bin \
-            -o wifi-repeater-esp32-merged.bin \
+            -o build/wifi-repeater-esp32-merged.bin \
             -f raw
 
-      - name: Verify merged firmware
-        working-directory: wifi-repeater-espidf/build
+      - name: Verify complete flash image
+        working-directory: wifi-repeater-espidf
         run: |
-          test -s wifi-repeater-esp32-merged.bin
-          echo "Merged firmware size: $(stat -c%s wifi-repeater-esp32-merged.bin) bytes"
+          test -s build/wifi-repeater-esp32-merged.bin
+          python "$IDF_PATH/components/esptool_py/esptool/esptool.py" \
+            --chip esp32 image-info build/wifi-repeater-esp32-merged.bin
+
+          SIZE=$(stat -c%s build/wifi-repeater-esp32-merged.bin)
+          echo "Merged flash image size: ${SIZE} bytes"
+
+          # The board has 2 MiB flash. Never publish an image larger than it.
+          test "$SIZE" -le $((2 * 1024 * 1024))
+
+          # Confirm the image is not suspiciously truncated.
+          test "$SIZE" -ge $((0x10000 + 0x1000))
+
+      - name: Show flash layout
+        working-directory: wifi-repeater-espidf
+        run: |
+          cat build/flasher_args.json
+          echo "--- partition table ---"
+          python "$IDF_PATH/components/partition_table/gen_esp32part.py" \
+            build/partition_table/partition-table.bin
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
