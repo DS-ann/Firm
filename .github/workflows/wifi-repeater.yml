@@ -25,7 +25,6 @@ jobs:
         uses: espressif/install-esp-idf-action@v1
         with:
           version: v5.5.5
-          target: esp32
 
       - name: Build repeater
         working-directory: wifi-repeater-espidf
@@ -36,7 +35,7 @@ jobs:
       - name: Create merged firmware binary
         working-directory: wifi-repeater-espidf
         run: |
-          esptool.py --chip esp32 merge-bin \
+          esptool.py --chip esp32 merge_bin \
             -o build/wifi-repeater-esp32-merged.bin \
             --flash-mode dio \
             --flash-freq 40m \
