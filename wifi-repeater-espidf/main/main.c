@@ -22,12 +22,22 @@ static esp_netif_t *s_ap_netif;
 static int s_retry_count;
 static bool s_napt_enabled;
 static volatile bool s_sta_has_ip;
+static volatile bool s_sta_connecting;
 
 static void configure_ap_dns_from_sta(void)
 {
     esp_netif_dns_info_t dns;
     if (esp_netif_get_dns_info(s_sta_netif, ESP_NETIF_DNS_MAIN, &dns) != ESP_OK) {
-        ESP_LOGW(TAG, "Could not read upstream DNS; AP clients will use the AP gateway");
+        ESP_LOGW(TAG, "Could not read upstream DNS; keeping AP gateway DNS");
+        return;
+    }
+
+    /* Only update the AP DHCP DNS option when the upstream DNS actually
+     * changed. Restarting DHCP on every reconnect can unnecessarily disturb
+     * clients which already have valid leases. */
+    esp_netif_dns_info_t current;
+    if (esp_netif_get_dns_info(s_ap_netif, ESP_NETIF_DNS_MAIN, &current) == ESP_OK &&
+        current.ip.u_addr.ip4.addr == dns.ip.u_addr.ip4.addr) {
         return;
     }
 
@@ -35,6 +45,7 @@ static void configure_ap_dns_from_sta(void)
     esp_err_t err = esp_netif_dhcps_stop(s_ap_netif);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Could not stop AP DHCP server before DNS update: %s", esp_err_to_name(err));
+        return;
     }
 
     err = esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
@@ -134,10 +145,12 @@ static void reconnect_task(void *arg)
 {
     (void)arg;
     while (true) {
-        if (!s_sta_has_ip) {
+        if (!s_sta_has_ip && !s_sta_connecting) {
+            s_sta_connecting = true;
             esp_err_t err = esp_wifi_connect();
             if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
-                ESP_LOGW(TAG, "Reconnect request failed: %s", esp_err_to_name(err));
+                ESP_LOGW(TAG, "Background reconnect request failed: %s", esp_err_to_name(err));
+                s_sta_connecting = false;
             }
         }
         vTaskDelay(pdMS_TO_TICKS(RECONNECT_DELAY_MS));
@@ -161,25 +174,35 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         s_retry_count = 0;
         s_sta_has_ip = false;
+        s_sta_connecting = true;
         esp_err_t err = esp_wifi_connect();
-        if (err != ESP_OK) {
+        if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+            s_sta_connecting = false;
             ESP_LOGW(TAG, "Initial connection request failed: %s", esp_err_to_name(err));
         }
         ESP_LOGI(TAG, "Connecting to phone hotspot: %s", CONFIG_REPEATER_UPSTREAM_SSID);
         return;
     }
 
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        s_sta_connecting = false;
+        return;
+    }
+
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *event = data;
         s_sta_has_ip = false;
+        s_sta_connecting = false;
         disable_napt();
 
         ESP_LOGW(TAG, "Upstream disconnected: reason=%d", event ? event->reason : -1);
 
         if (s_retry_count < MAX_RETRY) {
             s_retry_count++;
+            s_sta_connecting = true;
             esp_err_t err = esp_wifi_connect();
             if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
+                s_sta_connecting = false;
                 ESP_LOGW(TAG, "Reconnect attempt failed: %s", esp_err_to_name(err));
             }
             ESP_LOGW(TAG, "Reconnect attempt %d/%d", s_retry_count, MAX_RETRY);
@@ -195,12 +218,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         const ip_event_got_ip_t *event = data;
         s_retry_count = 0;
         s_sta_has_ip = true;
+        s_sta_connecting = false;
 
         if (event) {
             ESP_LOGI(TAG, "Got upstream IPv4 address: " IPSTR,
                      IP2STR(&event->ip_info.ip));
         }
 
+        /* In APSTA mode ESP-IDF gives the STA/upstream channel priority and
+         * automatically keeps the SoftAP on the same home channel. */
         configure_ap_dns_from_sta();
         enable_napt();
         print_network_info();
