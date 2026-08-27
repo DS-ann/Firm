@@ -8,8 +8,11 @@ on:
     branches:
       - esp-idf-conversion
 
+# The target board has 2 MB SPI flash. Keep the generated image and
+# partition layout consistent with the physical flash size.
 env:
   BLE_HARDENING_VERIFICATION: '2'
+  ESP_FLASH_SIZE: 2MB
 
 jobs:
   build:
@@ -18,18 +21,107 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Initialize ESP-IDF environment
         shell: bash
         run: |
           . /opt/esp/idf/export.sh
           idf.py --version
+
       - name: Build native ESP-IDF firmware
         shell: bash
         run: |
+          set -euo pipefail
           . /opt/esp/idf/export.sh
           idf.py set-target esp32
           idf.py build
-          esptool.py --chip esp32 merge_bin -o build/Firm_IDF-merged.bin --flash_mode dio --flash_freq 40m --flash_size 4MB 0x0 build/bootloader/bootloader.bin 0x8000 build/partition_table/partition-table.bin 0x10000 build/Firm_IDF.bin
+
+      - name: Verify 2 MB flash layout and application size
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          python3 - <<'PY'
+          import csv
+          import os
+          import struct
+
+          flash_size = 0x200000
+          app_offset = 0x10000
+          app_path = 'build/Firm_IDF.bin'
+          part_path = 'build/partition_table/partition-table.csv'
+
+          app_size = os.path.getsize(app_path)
+          if app_offset + app_size > flash_size:
+              raise SystemExit(
+                  f'Application does not fit in 2 MB flash: '
+                  f'offset=0x{app_offset:x}, size={app_size}, '
+                  f'end=0x{app_offset + app_size:x}'
+              )
+
+          with open(part_path, newline='') as f:
+              rows = list(csv.reader(f))
+
+          factory = None
+          for row in rows:
+              if len(row) >= 5 and row[0].strip() == 'factory':
+                  factory = row
+                  break
+          if factory is None:
+              raise SystemExit('factory partition missing')
+
+          offset = int(factory[3].strip(), 0)
+          size_text = factory[4].strip().upper()
+          if size_text.endswith('M'):
+              size = int(float(size_text[:-1]) * 1024 * 1024)
+          elif size_text.endswith('K'):
+              size = int(float(size_text[:-1]) * 1024)
+          else:
+              size = int(size_text, 0)
+
+          if offset != app_offset:
+              raise SystemExit(f'Unexpected factory offset: 0x{offset:x}')
+          if offset + size > flash_size:
+              raise SystemExit(
+                  f'Factory partition exceeds 2 MB flash: '
+                  f'end=0x{offset + size:x}'
+              )
+          if app_size > size:
+              raise SystemExit(
+                  f'Application exceeds factory partition: '
+                  f'app={app_size}, partition={size}'
+              )
+
+          print(f'2 MB flash verification OK')
+          print(f'Factory partition: 0x{offset:x} + 0x{size:x}')
+          print(f'Application size: {app_size} bytes')
+          PY
+
+      - name: Create merged 2 MB firmware
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /opt/esp/idf/export.sh
+          esptool.py --chip esp32 merge_bin \
+            -o build/Firm_IDF-merged.bin \
+            --flash_mode dio \
+            --flash_freq 40m \
+            --flash_size 2MB \
+            0x0 build/bootloader/bootloader.bin \
+            0x8000 build/partition_table/partition-table.bin \
+            0x10000 build/Firm_IDF.bin
+
+      - name: Verify merged image size
+        shell: bash
+        run: |
+          set -euo pipefail
+          size=$(stat -c%s build/Firm_IDF-merged.bin)
+          if [ "$size" -gt $((2 * 1024 * 1024)) ]; then
+            echo "Merged image is larger than 2 MB: $size bytes"
+            exit 1
+          fi
+          echo "Merged image size: $size bytes"
+
       - name: Upload firmware binaries
         uses: actions/upload-artifact@v4
         with:
