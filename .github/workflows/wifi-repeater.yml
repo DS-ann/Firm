@@ -35,14 +35,15 @@ jobs:
       - name: Create merged firmware binary
         working-directory: wifi-repeater-espidf
         run: |
-          esptool.py --chip esp32 merge_bin \
+          idf.py merge-bin \
             -o build/wifi-repeater-esp32-merged.bin \
-            --flash-mode dio \
-            --flash-freq 40m \
-            --flash-size 4MB \
-            0x1000 build/bootloader/bootloader.bin \
-            0x8000 build/partition_table/partition-table.bin \
-            0x10000 build/wifi_repeater.bin
+            -f raw
+
+      - name: Verify merged firmware
+        working-directory: wifi-repeater-espidf
+        run: |
+          test -s build/wifi-repeater-esp32-merged.bin
+          echo "Merged firmware size: $(stat -c%s build/wifi-repeater-esp32-merged.bin) bytes"
 
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
