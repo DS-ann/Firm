@@ -2,13 +2,13 @@ menu "Wi-Fi Repeater"
 
 config REPEATER_UPSTREAM_SSID
     string "Phone hotspot SSID"
-    default "PHONE_HOTSPOT"
+    default "vivo Y15s"
     help
         2.4 GHz SSID of the phone hotspot used as the upstream connection.
 
 config REPEATER_UPSTREAM_PASSWORD
     string "Phone hotspot password"
-    default "CHANGE_ME"
+    default "debarghya1"
     help
         Password for the upstream phone hotspot. Change this locally before flashing.
 
