@@ -1,0 +1,45 @@
+name: Wi-Fi Repeater ESP-IDF
+
+on:
+  push:
+    branches:
+      - wifi-repeater-espidf
+      - main
+    paths:
+      - 'wifi-repeater-espidf/**'
+      - '.github/workflows/wifi-repeater.yml'
+  pull_request:
+    paths:
+      - 'wifi-repeater-espidf/**'
+      - '.github/workflows/wifi-repeater.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ESP-IDF v5.5.5
+        uses: espressif/install-esp-idf-action@v1
+        with:
+          version: v5.5.5
+          target: esp32
+
+      - name: Build repeater
+        working-directory: wifi-repeater-espidf
+        run: |
+          idf.py set-target esp32
+          idf.py build
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: wifi-repeater-esp32-firmware
+          path: |
+            wifi-repeater-espidf/build/*.bin
+            wifi-repeater-espidf/build/bootloader/*.bin
+            wifi-repeater-espidf/build/partition_table/*.bin
+            wifi-repeater-espidf/build/flasher_args.json
+          if-no-files-found: error
