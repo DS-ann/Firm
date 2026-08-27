@@ -33,7 +33,7 @@ static void configure_ap_dns_from_sta(void)
 
     uint8_t offer_dns = DHCPS_OFFER_DNS;
     esp_err_t err = esp_netif_dhcps_stop(s_ap_netif);
-    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+    if (err != ESP_OK) {
         ESP_LOGW(TAG, "Could not stop AP DHCP server before DNS update: %s", esp_err_to_name(err));
     }
 
@@ -50,7 +50,7 @@ static void configure_ap_dns_from_sta(void)
     }
 
     err = esp_netif_dhcps_start(s_ap_netif);
-    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
+    if (err != ESP_OK) {
         ESP_LOGW(TAG, "Could not restart AP DHCP server: %s", esp_err_to_name(err));
     }
 }
