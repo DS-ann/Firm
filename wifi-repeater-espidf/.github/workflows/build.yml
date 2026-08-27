@@ -1,0 +1,41 @@
+name: Build ESP32 Wi-Fi Repeater
+
+on:
+  push:
+    branches: [wifi-repeater-espidf]
+    paths:
+      - 'wifi-repeater-espidf/**'
+  pull_request:
+    branches: [wifi-repeater-espidf]
+    paths:
+      - 'wifi-repeater-espidf/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wifi-repeater-espidf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with ESP-IDF 5.5.5
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32
+          path: wifi-repeater-espidf
+          command: idf.py build
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-wifi-repeater-firmware
+          path: |
+            wifi-repeater-espidf/build/*.bin
+            wifi-repeater-espidf/build/bootloader/*.bin
+            wifi-repeater-espidf/build/partition_table/*.bin
+          if-no-files-found: error
