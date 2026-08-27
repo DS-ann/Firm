@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -13,6 +14,7 @@
 #define DHCPS_OFFER_DNS 0x02
 #define MAX_RETRY 8
 #define RECONNECT_DELAY_MS 5000
+#define DIAGNOSTICS_INTERVAL_MS 30000
 
 static const char *TAG = "wifi_repeater";
 static esp_netif_t *s_sta_netif;
@@ -30,13 +32,14 @@ static void configure_ap_dns_from_sta(void)
     }
 
     uint8_t offer_dns = DHCPS_OFFER_DNS;
-    if (esp_netif_dhcps_stop(s_ap_netif) != ESP_OK) {
-        ESP_LOGW(TAG, "Could not stop AP DHCP server before DNS update");
+    esp_err_t err = esp_netif_dhcps_stop(s_ap_netif);
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        ESP_LOGW(TAG, "Could not stop AP DHCP server before DNS update: %s", esp_err_to_name(err));
     }
 
-    esp_err_t err = esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
-                                           ESP_NETIF_DOMAIN_NAME_SERVER,
-                                           &offer_dns, sizeof(offer_dns));
+    err = esp_netif_dhcps_option(s_ap_netif, ESP_NETIF_OP_SET,
+                                 ESP_NETIF_DOMAIN_NAME_SERVER,
+                                 &offer_dns, sizeof(offer_dns));
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Could not enable DHCP DNS option: %s", esp_err_to_name(err));
     }
@@ -47,7 +50,7 @@ static void configure_ap_dns_from_sta(void)
     }
 
     err = esp_netif_dhcps_start(s_ap_netif);
-    if (err != ESP_OK) {
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
         ESP_LOGW(TAG, "Could not restart AP DHCP server: %s", esp_err_to_name(err));
     }
 }
@@ -67,7 +70,6 @@ static void enable_napt(void)
         s_napt_enabled = true;
         ESP_LOGI(TAG, "NAPT enabled: AP clients can use the STA internet connection");
     } else if (err == ESP_ERR_INVALID_STATE) {
-        // Already enabled by the network stack; treat it as enabled.
         s_napt_enabled = true;
         ESP_LOGI(TAG, "NAPT was already enabled");
     } else {
@@ -88,21 +90,47 @@ static void disable_napt(void)
 
 static void print_network_info(void)
 {
-    esp_netif_ip_info_t sta_ip;
-    esp_netif_ip_info_t ap_ip;
+    esp_netif_ip_info_t sta_ip = {0};
+    esp_netif_ip_info_t ap_ip = {0};
+    wifi_ap_record_t ap_record = {0};
+    uint8_t primary_channel = 0;
+    wifi_second_chan_t second_channel = WIFI_SECOND_CHAN_NONE;
 
     if (esp_netif_get_ip_info(s_sta_netif, &sta_ip) == ESP_OK) {
-        ESP_LOGI(TAG, "Upstream IP=" IPSTR " gateway=" IPSTR,
+        ESP_LOGI(TAG, "STA IP=" IPSTR " gateway=" IPSTR,
                  IP2STR(&sta_ip.ip), IP2STR(&sta_ip.gw));
     }
     if (esp_netif_get_ip_info(s_ap_netif, &ap_ip) == ESP_OK) {
-        ESP_LOGI(TAG, "Repeater AP IP=" IPSTR,
-                 IP2STR(&ap_ip.ip));
+        ESP_LOGI(TAG, "AP IP=" IPSTR " netmask=" IPSTR,
+                 IP2STR(&ap_ip.ip), IP2STR(&ap_ip.netmask));
+    }
+
+    if (s_sta_has_ip && esp_wifi_sta_get_ap_info(&ap_record) == ESP_OK) {
+        ESP_LOGI(TAG, "Upstream RSSI=%d dBm, BSSID=" MACSTR,
+                 ap_record.rssi, MAC2STR(ap_record.bssid));
+    } else {
+        ESP_LOGW(TAG, "Upstream AP information unavailable");
+    }
+
+    if (esp_wifi_get_channel(&primary_channel, &second_channel) == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi channel=%u secondary=%s",
+                 primary_channel,
+                 second_channel == WIFI_SECOND_CHAN_NONE ? "none" :
+                 (second_channel == WIFI_SECOND_CHAN_ABOVE ? "above" : "below"));
+    }
+
+    wifi_sta_list_t sta_list = {0};
+    if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK) {
+        ESP_LOGI(TAG, "AP clients connected=%d/%d, NAPT=%s, upstream=%s",
+                 sta_list.num, 4,
+                 s_napt_enabled ? "ON" : "OFF",
+                 s_sta_has_ip ? "UP" : "DOWN");
     }
 }
 
 static void reconnect_task(void *arg)
 {
+    (void)arg;
     while (true) {
         if (!s_sta_has_ip) {
             esp_err_t err = esp_wifi_connect();
@@ -114,9 +142,20 @@ static void reconnect_task(void *arg)
     }
 }
 
+static void diagnostics_task(void *arg)
+{
+    (void)arg;
+    while (true) {
+        print_network_info();
+        vTaskDelay(pdMS_TO_TICKS(DIAGNOSTICS_INTERVAL_MS));
+    }
+}
+
 static void wifi_event_handler(void *arg, esp_event_base_t base,
                                int32_t id, void *data)
 {
+    (void)arg;
+
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         s_retry_count = 0;
         s_sta_has_ip = false;
@@ -129,16 +168,19 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *event = data;
         s_sta_has_ip = false;
         disable_napt();
+
+        ESP_LOGW(TAG, "Upstream disconnected: reason=%d", event ? event->reason : -1);
+
         if (s_retry_count < MAX_RETRY) {
             s_retry_count++;
             esp_err_t err = esp_wifi_connect();
             if (err != ESP_OK && err != ESP_ERR_WIFI_CONN) {
                 ESP_LOGW(TAG, "Reconnect attempt failed: %s", esp_err_to_name(err));
             }
-            ESP_LOGW(TAG, "Upstream disconnected; reconnect attempt %d/%d",
-                     s_retry_count, MAX_RETRY);
+            ESP_LOGW(TAG, "Reconnect attempt %d/%d", s_retry_count, MAX_RETRY);
         } else {
             ESP_LOGW(TAG, "Repeated upstream failures; background reconnect continues every %d seconds",
                      RECONNECT_DELAY_MS / 1000);
@@ -148,8 +190,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        const ip_event_got_ip_t *event = data;
         s_retry_count = 0;
         s_sta_has_ip = true;
+
+        if (event) {
+            ESP_LOGI(TAG, "Got upstream IPv4 address: " IPSTR,
+                     IP2STR(&event->ip_info.ip));
+        }
+
         configure_ap_dns_from_sta();
         enable_napt();
         print_network_info();
@@ -157,14 +206,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     }
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STACONNECTED) {
-        const wifi_event_ap_staconnected_t *e = data;
-        ESP_LOGI(TAG, "Client joined AP, AID=%d", e->aid);
+        const wifi_event_ap_staconnected_t *event = data;
+        ESP_LOGI(TAG, "Client joined AP, AID=%d", event ? event->aid : -1);
         return;
     }
 
     if (base == WIFI_EVENT && id == WIFI_EVENT_AP_STADISCONNECTED) {
-        const wifi_event_ap_stadisconnected_t *e = data;
-        ESP_LOGI(TAG, "Client left AP, AID=%d reason=%d", e->aid, e->reason);
+        const wifi_event_ap_stadisconnected_t *event = data;
+        ESP_LOGI(TAG, "Client left AP, AID=%d reason=%d",
+                 event ? event->aid : -1,
+                 event ? event->reason : -1);
     }
 }
 
@@ -243,15 +294,10 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_LOGI(TAG, "Repeater ready. Connect clients to %s", CONFIG_REPEATER_AP_SSID);
 
-    BaseType_t task_ok = xTaskCreate(reconnect_task, "reconnect_task", 3072, NULL, 4, NULL);
-    if (task_ok != pdPASS) {
+    if (xTaskCreate(reconnect_task, "reconnect_task", 3072, NULL, 4, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed to create reconnect task");
     }
-
-    while (true) {
-        if (s_napt_enabled) {
-            print_network_info();
-        }
-        vTaskDelay(pdMS_TO_TICKS(30000));
+    if (xTaskCreate(diagnostics_task, "diagnostics_task", 4096, NULL, 3, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create diagnostics task");
     }
 }
