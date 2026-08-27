@@ -10,7 +10,7 @@ config REPEATER_UPSTREAM_PASSWORD
     string "Phone hotspot password"
     default "CHANGE_ME"
     help
-        Password for the upstream phone hotspot.
+        Password for the upstream phone hotspot. Change this locally before flashing.
 
 config REPEATER_AP_SSID
     string "Repeater AP SSID"
