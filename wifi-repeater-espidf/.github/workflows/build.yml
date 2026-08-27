@@ -30,12 +30,29 @@ jobs:
           path: wifi-repeater-espidf
           command: idf.py build
 
+      - name: Create complete 2 MB flash image
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32
+          path: wifi-repeater-espidf
+          command: idf.py merge-bin -o build/esp32-wifi-repeater-2mb.bin
+
+      - name: Verify generated image and partition layout
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.5
+          target: esp32
+          path: wifi-repeater-espidf
+          command: idf.py size
+
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
           name: esp32-wifi-repeater-firmware
           path: |
-            wifi-repeater-espidf/build/*.bin
-            wifi-repeater-espidf/build/bootloader/*.bin
-            wifi-repeater-espidf/build/partition_table/*.bin
+            wifi-repeater-espidf/build/esp32-wifi-repeater-2mb.bin
+            wifi-repeater-espidf/build/wifi_repeater.bin
+            wifi-repeater-espidf/build/bootloader/bootloader.bin
+            wifi-repeater-espidf/build/partition_table/partition-table.bin
           if-no-files-found: error
