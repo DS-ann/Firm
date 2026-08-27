@@ -29,6 +29,7 @@ jobs:
       - name: Build repeater
         working-directory: wifi-repeater-espidf
         run: |
+          idf.py fullclean
           idf.py set-target esp32
           idf.py build
 
@@ -38,29 +39,71 @@ jobs:
           python "$IDF_PATH/components/esptool_py/esptool/esptool.py" \
             --chip esp32 image-info build/wifi_repeater.bin
 
+      - name: Verify generated flash map
+        working-directory: wifi-repeater-espidf
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path("build/flasher_args.json")
+          data = json.loads(p.read_text())
+          flash = data.get("flash_files", {})
+          expected = {
+              "0x1000": "build/bootloader/bootloader.bin",
+              "0x8000": "build/partition_table/partition-table.bin",
+              "0x10000": "build/wifi_repeater.bin",
+          }
+          for offset, path in expected.items():
+              actual = flash.get(offset)
+              if actual != path:
+                  raise SystemExit(f"Wrong flash map: {offset}: {actual!r}, expected {path!r}")
+              if not Path(path).is_file() or Path(path).stat().st_size == 0:
+                  raise SystemExit(f"Missing/empty image: {path}")
+          print("Verified ESP32 flash map:")
+          for k, v in expected.items():
+              print(f"  {k} -> {v}")
+          PY
+
       - name: Create complete flash image
         working-directory: wifi-repeater-espidf
         run: |
           rm -f build/wifi-repeater-esp32-merged.bin
           idf.py merge-bin \
             -o build/wifi-repeater-esp32-merged.bin \
-            -f raw
+            -f raw \
+            --pad-to-size 0x200000
 
       - name: Verify complete flash image
         working-directory: wifi-repeater-espidf
         run: |
           test -s build/wifi-repeater-esp32-merged.bin
+          SIZE=$(stat -c%s build/wifi-repeater-esp32-merged.bin)
+          echo "Merged flash image size: ${SIZE} bytes"
+          test "$SIZE" -eq $((2 * 1024 * 1024))
+
           python "$IDF_PATH/components/esptool_py/esptool/esptool.py" \
             --chip esp32 image-info build/wifi-repeater-esp32-merged.bin
 
-          SIZE=$(stat -c%s build/wifi-repeater-esp32-merged.bin)
-          echo "Merged flash image size: ${SIZE} bytes"
+          python - <<'PY'
+          from pathlib import Path
+          import struct
 
-          # The board has 2 MiB flash. Never publish an image larger than it.
-          test "$SIZE" -le $((2 * 1024 * 1024))
-
-          # Confirm the image is not suspiciously truncated.
-          test "$SIZE" -ge $((0x10000 + 0x1000))
+          p = Path("build/wifi-repeater-esp32-merged.bin")
+          b = p.read_bytes()
+          checks = {
+              0x1000: "bootloader",
+              0x8000: "partition table",
+              0x10000: "application",
+          }
+          for off, name in checks.items():
+              if b[off:off+4] == b"\xff\xff\xff\xff":
+                  raise SystemExit(f"{name} region is erased at 0x{off:x}")
+          # ESP32 image magic at the application offset.
+          if b[0x10000] != 0xE9:
+              raise SystemExit("No ESP32 application image magic at 0x10000")
+          print("Merged image contains bootloader, partition table, and app at expected offsets.")
+          PY
 
       - name: Show flash layout
         working-directory: wifi-repeater-espidf
