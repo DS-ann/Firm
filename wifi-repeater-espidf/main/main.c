@@ -106,8 +106,10 @@ static void print_network_info(void)
     }
 
     if (s_sta_has_ip && esp_wifi_sta_get_ap_info(&ap_record) == ESP_OK) {
-        ESP_LOGI(TAG, "Upstream RSSI=%d dBm, BSSID=" MACSTR,
-                 ap_record.rssi, MAC2STR(ap_record.bssid));
+        ESP_LOGI(TAG, "Upstream RSSI=%d dBm, BSSID=%02x:%02x:%02x:%02x:%02x:%02x",
+                 ap_record.rssi,
+                 ap_record.bssid[0], ap_record.bssid[1], ap_record.bssid[2],
+                 ap_record.bssid[3], ap_record.bssid[4], ap_record.bssid[5]);
     } else {
         ESP_LOGW(TAG, "Upstream AP information unavailable");
     }
