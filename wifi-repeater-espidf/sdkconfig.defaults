@@ -1,0 +1,8 @@
+# NAT/routing support required for internet sharing.
+CONFIG_LWIP_IP_FORWARD=y
+CONFIG_LWIP_IPV4_NAPT=y
+CONFIG_LWIP_IPV4_NAPT_PORTMAP=y
+CONFIG_LWIP_IPV4=y
+
+# Keep IPv4 DHCP/DNS support enabled.
+CONFIG_LWIP_DHCP_DOES_ARP_CHECK=y
