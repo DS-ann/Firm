@@ -1,0 +1,88 @@
+name: Download, Unzip & Upload Files
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Direct URL of the ZIP file to download"
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      files: ${{ steps.files.outputs.files }}
+    steps:
+      - name: Download ZIP
+        env:
+          URL: ${{ inputs.url }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-all-errors "$URL" -o archive.zip
+
+      - name: Unzip
+        run: |
+          set -euo pipefail
+          mkdir extracted
+          unzip -q archive.zip -d extracted
+
+      - name: Build file matrix
+        id: files
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
+          root = Path("extracted")
+          files = [p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()]
+
+          if not files:
+              raise SystemExit("The archive contains no files.")
+
+          # Artifact names must be unique. Since the requested artifact name is
+          # the file name, reject duplicate basenames rather than silently
+          # overwriting/colliding artifacts.
+          basenames = [Path(p).name for p in files]
+          duplicates = sorted({n for n in basenames if basenames.count(n) > 1})
+          if duplicates:
+              raise SystemExit(
+                  "Duplicate file names found: " + ", ".join(duplicates)
+                  + ". Artifact names must be unique."
+              )
+
+          print("Files:")
+          for f in files:
+              print(f"  {f}")
+
+          with open(__import__("os").environ["GITHUB_OUTPUT"], "a") as out:
+              out.write("files=" + json.dumps(files, separators=(",", ":")) + "\n")
+
+  upload:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        file: ${{ fromJSON(needs.prepare.outputs.files) }}
+    steps:
+      - name: Download ZIP
+        env:
+          URL: ${{ inputs.url }}
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-all-errors "$URL" -o archive.zip
+
+      - name: Unzip
+        run: |
+          set -euo pipefail
+          mkdir extracted
+          unzip -q archive.zip -d extracted
+
+      - name: Upload file
+        uses: actions/upload-artifact@v7
+        with:
+          path: extracted/${{ matrix.file }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
