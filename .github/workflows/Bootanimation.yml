@@ -20,14 +20,14 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg imagemagick zip
+          sudo apt-get install -y ffmpeg imagemagick zip python3
 
-          echo "Checking installed tools..."
           command -v ffmpeg
           command -v ffprobe
           command -v convert
           command -v identify
           command -v zip
+          command -v python3
 
       - name: Check input video
         run: |
@@ -42,68 +42,104 @@ jobs:
             -of default=noprint_wrappers=1 \
             boot.mp4
 
-      - name: Create frames
+      - name: Create exactly 90 frames
         run: |
           mkdir -p frames
 
           ffmpeg -y \
             -i boot.mp4 \
-            -vf "fps=125/3,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" \
-            -frames:v 125 \
+            -vf "fps=30,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" \
+            -frames:v 90 \
             -start_number 1 \
             frames/boot_%03d.png
 
-      - name: Verify exactly 125 frames
+      - name: Verify exactly 90 frames
         run: |
           count=$(find frames -maxdepth 1 -type f -name 'boot_*.png' | wc -l)
 
           echo "Frames created: $count"
 
-          if [ "$count" -ne 125 ]; then
-            echo "ERROR: Expected exactly 125 frames."
+          if [ "$count" -ne 90 ]; then
+            echo "ERROR: Expected exactly 90 frames."
             exit 1
           fi
 
-      - name: Compress PNG files
+      - name: Ensure every PNG is at least 200 KiB
         run: |
           set -e
 
-          for file in frames/boot_*.png; do
-            echo "Compressing $file"
-            success=0
+          python3 <<'PY'
+          import os
+          import struct
+          import zlib
 
-            for colors in 256 128 64 32 16 8 4 2; do
-              temp="\${file}.tmp.png"
+          MIN_SIZE = 200 * 1024
 
-              convert "$file" \
-                -strip \
-                -colors "$colors" \
-                -depth 8 \
-                -define png:compression-level=9 \
-                -define png:compression-filter=5 \
-                -define png:compression-strategy=1 \
-                "$temp"
+          def png_chunk(kind, data):
+              return (
+                  struct.pack(">I", len(data)) +
+                  kind +
+                  data +
+                  struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+              )
 
-              size=$(stat -c%s "$temp")
+          for name in sorted(os.listdir("frames")):
+              if not name.endswith(".png"):
+                  continue
 
-              if [ "$size" -le 102400 ]; then
-                mv "$temp" "$file"
-                echo "  OK: \${size} bytes ($colors colors)"
-                success=1
-                break
-              fi
+              path = os.path.join("frames", name)
+              size = os.path.getsize(path)
 
-              rm -f "$temp"
-            done
+              if size >= MIN_SIZE:
+                  print(f"{name}: {size} bytes - already >= 200 KiB")
+                  continue
 
-            if [ "$success" -ne 1 ]; then
-              echo "ERROR: $file could not be compressed below 100 KB."
-              echo "The requested 1080x1920 PNG + 100 KB limit is too restrictive for this frame."
-              exit 1
-            fi
-          done
+              # Add valid PNG tEXt ancillary chunks containing padding.
+              # This changes file size only; the decoded image remains identical.
+              needed = MIN_SIZE - size
 
-      - name: Verify resolution and file size
+              with open(path, "rb") as f:
+                  data = f.read()
+
+              if not data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
+                  raise RuntimeError(f"{name}: not a valid PNG")
+
+              # Insert padding before IEND.
+              iend = data.rfind(b"IEND")
+              if iend < 4:
+                  raise RuntimeError(f"{name}: IEND chunk not found")
+
+              iend_start = iend - 4
+              padding_payload_size = max(1, needed - 12)
+
+              # tEXt keyword + NUL + padding text.
+              keyword = b"padding"
+              payload = keyword + b"\\x00" + (b"0" * max(0, padding_payload_size - len(keyword) - 1))
+              chunk = png_chunk(b"tEXt", payload)
+
+              # If rounding leaves us short, add another valid chunk.
+              new_data = data[:iend_start] + chunk + data[iend_start:]
+
+              while len(new_data) < MIN_SIZE:
+                  extra = MIN_SIZE - len(new_data)
+                  payload_len = max(1, extra - 12)
+                  payload = b"pad" + b"\\x00" + (b"0" * max(0, payload_len - 4))
+                  chunk = png_chunk(b"tEXt", payload)
+                  new_data = new_data[:iend_start] + chunk + new_data[iend_start:]
+                  iend_start += len(chunk)
+
+              with open(path, "wb") as f:
+                  f.write(new_data)
+
+              final_size = os.path.getsize(path)
+              if final_size < MIN_SIZE:
+                  raise RuntimeError(f"{name}: could not reach 200 KiB")
+
+              print(f"{name}: padded from {size} to {final_size} bytes")
+
+          PY
+
+      - name: Verify resolution and minimum file size
         run: |
           set -e
 
@@ -115,8 +151,8 @@ jobs:
             size=$(stat -c%s "$file")
             geometry=$(identify -format "%wx%h" "$file")
 
-            if [ "$size" -gt 102400 ]; then
-              echo "ERROR: $file is larger than 100 KB: $size bytes"
+            if [ "$size" -lt 204800 ]; then
+              echo "ERROR: $file is smaller than 200 KiB: $size bytes"
               exit 1
             fi
 
@@ -126,30 +162,31 @@ jobs:
             fi
           done
 
-          if [ "$count" -ne 125 ]; then
-            echo "ERROR: Final frame count is $count, expected 125."
+          if [ "$count" -ne 90 ]; then
+            echo "ERROR: Final frame count is $count, expected 90."
             exit 1
           fi
 
-          echo "All 125 images verified."
+          echo "All 90 images verified."
           echo "Resolution: 1080x1920"
-          echo "Maximum size: 100 KB"
-          echo "Naming: boot_001.png ... boot_125.png"
+          echo "Frame rate: 30 FPS"
+          echo "Minimum size: 200 KiB"
+          echo "Naming: boot_001.png ... boot_090.png"
 
       - name: Create ZIP
         run: |
           cd frames
-          zip -9 ../boot_animation_1080x1920_125frames.zip boot_*.png
+          zip -9 ../boot_animation_1080x1920_90frames.zip boot_*.png
           cd ..
 
           echo "ZIP created:"
-          ls -lh boot_animation_1080x1920_125frames.zip
+          ls -lh boot_animation_1080x1920_90frames.zip
 
       - name: Upload boot animation ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: boot-animation-1080x1920-125-frames
-          path: boot_animation_1080x1920_125frames.zip
+          name: boot-animation-1080x1920-90-frames
+          path: boot_animation_1080x1920_90frames.zip
           if-no-files-found: error
           retention-days: 30
 
