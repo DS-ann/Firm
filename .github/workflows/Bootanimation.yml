@@ -22,6 +22,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg imagemagick zip
 
+          echo "Checking installed tools..."
+          command -v ffmpeg
+          command -v ffprobe
+          command -v convert
+          command -v identify
+          command -v zip
+
       - name: Check input video
         run: |
           test -f boot.mp4 || {
@@ -63,16 +70,15 @@ jobs:
 
           for file in frames/boot_*.png; do
             echo "Compressing $file"
-
-            # Try progressively stronger palette reduction.
             success=0
 
             for colors in 256 128 64 32 16 8 4 2; do
-              temp="${file}.tmp.png"
+              temp="\${file}.tmp.png"
 
-              magick "$file" \
+              convert "$file" \
                 -strip \
                 -colors "$colors" \
+                -depth 8 \
                 -define png:compression-level=9 \
                 -define png:compression-filter=5 \
                 -define png:compression-strategy=1 \
@@ -82,7 +88,7 @@ jobs:
 
               if [ "$size" -le 102400 ]; then
                 mv "$temp" "$file"
-                echo "  OK: ${size} bytes (${colors} colors)"
+                echo "  OK: \${size} bytes ($colors colors)"
                 success=1
                 break
               fi
@@ -91,8 +97,8 @@ jobs:
             done
 
             if [ "$success" -ne 1 ]; then
-              echo "ERROR: $file could not be compressed below 100 KB"
-              echo "A 1080x1920 PNG cannot always fit below 100 KB."
+              echo "ERROR: $file could not be compressed below 100 KB."
+              echo "The requested 1080x1920 PNG + 100 KB limit is too restrictive for this frame."
               exit 1
             fi
           done
@@ -101,15 +107,18 @@ jobs:
         run: |
           set -e
 
+          count=0
+
           for file in frames/boot_*.png; do
+            count=$((count + 1))
+
             size=$(stat -c%s "$file")
+            geometry=$(identify -format "%wx%h" "$file")
 
             if [ "$size" -gt 102400 ]; then
-              echo "ERROR: $file is larger than 100 KB"
+              echo "ERROR: $file is larger than 100 KB: $size bytes"
               exit 1
             fi
-
-            geometry=$(identify -format "%wx%h" "$file")
 
             if [ "$geometry" != "1080x1920" ]; then
               echo "ERROR: $file has resolution $geometry"
@@ -117,10 +126,15 @@ jobs:
             fi
           done
 
-          echo "All 125 images:"
-          echo "  Resolution: 1080x1920"
-          echo "  Maximum size: 100 KB"
-          echo "  Naming: boot_001.png ... boot_125.png"
+          if [ "$count" -ne 125 ]; then
+            echo "ERROR: Final frame count is $count, expected 125."
+            exit 1
+          fi
+
+          echo "All 125 images verified."
+          echo "Resolution: 1080x1920"
+          echo "Maximum size: 100 KB"
+          echo "Naming: boot_001.png ... boot_125.png"
 
       - name: Create ZIP
         run: |
@@ -128,6 +142,7 @@ jobs:
           zip -9 ../boot_animation_1080x1920_125frames.zip boot_*.png
           cd ..
 
+          echo "ZIP created:"
           ls -lh boot_animation_1080x1920_125frames.zip
 
       - name: Upload boot animation ZIP
