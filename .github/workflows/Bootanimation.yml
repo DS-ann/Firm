@@ -1,0 +1,147 @@
+name: Convert Boot Animation
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "boot.mp4"
+
+permissions:
+  contents: read
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg imagemagick zip
+
+      - name: Check input video
+        run: |
+          test -f boot.mp4 || {
+            echo "ERROR: boot.mp4 not found in repository root."
+            exit 1
+          }
+
+          ffprobe -v error \
+            -show_entries format=duration \
+            -show_entries stream=width,height,r_frame_rate \
+            -of default=noprint_wrappers=1 \
+            boot.mp4
+
+      - name: Create frames
+        run: |
+          mkdir -p frames
+
+          ffmpeg -y \
+            -i boot.mp4 \
+            -vf "fps=125/3,scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2" \
+            -frames:v 125 \
+            -start_number 1 \
+            frames/boot_%03d.png
+
+      - name: Verify exactly 125 frames
+        run: |
+          count=$(find frames -maxdepth 1 -type f -name 'boot_*.png' | wc -l)
+
+          echo "Frames created: $count"
+
+          if [ "$count" -ne 125 ]; then
+            echo "ERROR: Expected exactly 125 frames."
+            exit 1
+          fi
+
+      - name: Compress PNG files
+        run: |
+          set -e
+
+          for file in frames/boot_*.png; do
+            echo "Compressing $file"
+
+            # Try progressively stronger palette reduction.
+            success=0
+
+            for colors in 256 128 64 32 16 8 4 2; do
+              temp="${file}.tmp.png"
+
+              magick "$file" \
+                -strip \
+                -colors "$colors" \
+                -define png:compression-level=9 \
+                -define png:compression-filter=5 \
+                -define png:compression-strategy=1 \
+                "$temp"
+
+              size=$(stat -c%s "$temp")
+
+              if [ "$size" -le 102400 ]; then
+                mv "$temp" "$file"
+                echo "  OK: ${size} bytes (${colors} colors)"
+                success=1
+                break
+              fi
+
+              rm -f "$temp"
+            done
+
+            if [ "$success" -ne 1 ]; then
+              echo "ERROR: $file could not be compressed below 100 KB"
+              echo "A 1080x1920 PNG cannot always fit below 100 KB."
+              exit 1
+            fi
+          done
+
+      - name: Verify resolution and file size
+        run: |
+          set -e
+
+          for file in frames/boot_*.png; do
+            size=$(stat -c%s "$file")
+
+            if [ "$size" -gt 102400 ]; then
+              echo "ERROR: $file is larger than 100 KB"
+              exit 1
+            fi
+
+            geometry=$(identify -format "%wx%h" "$file")
+
+            if [ "$geometry" != "1080x1920" ]; then
+              echo "ERROR: $file has resolution $geometry"
+              exit 1
+            fi
+          done
+
+          echo "All 125 images:"
+          echo "  Resolution: 1080x1920"
+          echo "  Maximum size: 100 KB"
+          echo "  Naming: boot_001.png ... boot_125.png"
+
+      - name: Create ZIP
+        run: |
+          cd frames
+          zip -9 ../boot_animation_1080x1920_125frames.zip boot_*.png
+          cd ..
+
+          ls -lh boot_animation_1080x1920_125frames.zip
+
+      - name: Upload boot animation ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-animation-1080x1920-125-frames
+          path: boot_animation_1080x1920_125frames.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload individual frames
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-animation-frames
+          path: frames/
+          if-no-files-found: error
+          retention-days: 30
