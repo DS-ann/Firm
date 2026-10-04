@@ -20,14 +20,13 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg imagemagick zip python3
+          sudo apt-get install -y ffmpeg imagemagick zip
 
           command -v ffmpeg
           command -v ffprobe
           command -v convert
           command -v identify
           command -v zip
-          command -v python3
 
       - name: Check input video
         run: |
@@ -42,7 +41,7 @@ jobs:
             -of default=noprint_wrappers=1 \
             boot.mp4
 
-      - name: Create exactly 90 frames
+      - name: Create exactly 90 frames matching 30 FPS video
         run: |
           mkdir -p frames
 
@@ -64,82 +63,47 @@ jobs:
             exit 1
           fi
 
-      - name: Ensure every PNG is at least 200 KiB
+      - name: Compress PNG files to max 200 KB
         run: |
           set -e
 
-          python3 <<'PY'
-          import os
-          import struct
-          import zlib
+          for file in frames/boot_*.png; do
+            echo "Compressing $file"
 
-          MIN_SIZE = 200 * 1024
+            success=0
 
-          def png_chunk(kind, data):
-              return (
-                  struct.pack(">I", len(data)) +
-                  kind +
-                  data +
-                  struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
-              )
+            for colors in 256 128 64 32 16 8 4 2; do
+              temp="${file}.tmp.png"
 
-          for name in sorted(os.listdir("frames")):
-              if not name.endswith(".png"):
-                  continue
+              convert "$file" \
+                -strip \
+                -colors "$colors" \
+                -depth 8 \
+                -define png:compression-level=9 \
+                -define png:compression-filter=5 \
+                -define png:compression-strategy=1 \
+                "$temp"
 
-              path = os.path.join("frames", name)
-              size = os.path.getsize(path)
+              size=$(stat -c%s "$temp")
 
-              if size >= MIN_SIZE:
-                  print(f"{name}: {size} bytes - already >= 200 KiB")
-                  continue
+              if [ "$size" -le 204800 ]; then
+                mv "$temp" "$file"
+                echo "  OK: $size bytes ($colors colors)"
+                success=1
+                break
+              fi
 
-              # Add valid PNG tEXt ancillary chunks containing padding.
-              # This changes file size only; the decoded image remains identical.
-              needed = MIN_SIZE - size
+              rm -f "$temp"
+            done
 
-              with open(path, "rb") as f:
-                  data = f.read()
+            if [ "$success" -ne 1 ]; then
+              echo "ERROR: $file could not be compressed below 200 KB."
+              echo "The requested 1080x1920 PNG + 200 KB maximum is too restrictive for this frame."
+              exit 1
+            fi
+          done
 
-              if not data.startswith(b"\\x89PNG\\r\\n\\x1a\\n"):
-                  raise RuntimeError(f"{name}: not a valid PNG")
-
-              # Insert padding before IEND.
-              iend = data.rfind(b"IEND")
-              if iend < 4:
-                  raise RuntimeError(f"{name}: IEND chunk not found")
-
-              iend_start = iend - 4
-              padding_payload_size = max(1, needed - 12)
-
-              # tEXt keyword + NUL + padding text.
-              keyword = b"padding"
-              payload = keyword + b"\\x00" + (b"0" * max(0, padding_payload_size - len(keyword) - 1))
-              chunk = png_chunk(b"tEXt", payload)
-
-              # If rounding leaves us short, add another valid chunk.
-              new_data = data[:iend_start] + chunk + data[iend_start:]
-
-              while len(new_data) < MIN_SIZE:
-                  extra = MIN_SIZE - len(new_data)
-                  payload_len = max(1, extra - 12)
-                  payload = b"pad" + b"\\x00" + (b"0" * max(0, payload_len - 4))
-                  chunk = png_chunk(b"tEXt", payload)
-                  new_data = new_data[:iend_start] + chunk + new_data[iend_start:]
-                  iend_start += len(chunk)
-
-              with open(path, "wb") as f:
-                  f.write(new_data)
-
-              final_size = os.path.getsize(path)
-              if final_size < MIN_SIZE:
-                  raise RuntimeError(f"{name}: could not reach 200 KiB")
-
-              print(f"{name}: padded from {size} to {final_size} bytes")
-
-          PY
-
-      - name: Verify resolution and minimum file size
+      - name: Verify resolution and file size
         run: |
           set -e
 
@@ -151,8 +115,8 @@ jobs:
             size=$(stat -c%s "$file")
             geometry=$(identify -format "%wx%h" "$file")
 
-            if [ "$size" -lt 204800 ]; then
-              echo "ERROR: $file is smaller than 200 KiB: $size bytes"
+            if [ "$size" -gt 204800 ]; then
+              echo "ERROR: $file is larger than 200 KB: $size bytes"
               exit 1
             fi
 
@@ -170,7 +134,7 @@ jobs:
           echo "All 90 images verified."
           echo "Resolution: 1080x1920"
           echo "Frame rate: 30 FPS"
-          echo "Minimum size: 200 KiB"
+          echo "Maximum size: 200 KB"
           echo "Naming: boot_001.png ... boot_090.png"
 
       - name: Create ZIP
